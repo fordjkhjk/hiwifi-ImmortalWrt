@@ -113,7 +113,7 @@ ubiconcat1  0x2240000  93.25MB ┘
 | 你的 `iptables -t nat -A POSTROUTING...` | 直接可用                     | 需装兼容层，易失效            |
 | ssr+ 支持                                | 成熟稳定                     | 透明代理/分流不完善           |
 
-结论：**23.05 更适配你的需求**。代价是 AdGuard Home 的 LuCI 界面在官方 23.05 feed 里没有，用社区源补（见下）。
+结论：**23.05 更适配你的需求**。代价是 AdGuard Home 的 LuCI 界面在官方 23.05 feed 里没有，用社区包补（见下）。
 
 ### 3. 插件来源核对结果
 
@@ -123,7 +123,7 @@ ubiconcat1  0x2240000  93.25MB ┘
 | U盘自动挂载       | `automount`                            | ImmortalWrt 官方 `package/emortal/automount`，热插拔自动挂载并写 fstab                                           |
 | iStore 商店    | `luci-app-store`                       | `src-git istore https://github.com/linkease/istore;main`（官方 README 写法）                               |
 | ssr+         | `luci-app-ssr-plus`                    | **ImmortalWrt 任何官方源都没有**，用上游 `fw876/helloworld`                                                      |
-| AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有，用 `rufengsuixing/luci-app-adguardhome` 补 |
+| AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
 | ZeroTier     | `zerotier` + `luci-app-zerotier`       | **纯官方 packages / luci 源，不需要任何第三方源**。本体约 500KB，依赖 `kmod-tun`（TUN/TAP 虚拟网卡）                            |
 | vlmcsd (KMS) | `vlmcsd` + `luci-app-vlmcsd`           | **纯官方 packages / luci 源**。本体仅 23KB，用于局域网内 Windows / Office 的 KMS 激活                                  |
 
@@ -156,9 +156,9 @@ ubiconcat1  0x2240000  93.25MB ┘
 ```
 .github/workflows/openwrt-builder.yml   # 构建流程，档位可选 minimal / full / both；含季度定时
 .github/workflows/keepalive.yml          # 每月自动提交一次，防止定时任务被 60 天规则禁用
-feeds.conf.default                      # 4 个官方源 + helloworld + istore + adguardhome
+feeds.conf.default                      # 4 个官方源 + helloworld + istore（AGH 界面不走 feed，见 diy-part1.sh）
 configs/config-minimal.config           # 档位 A：精简版 ~11MB，Breed 首刷（出 factory+sysupgrade）
-configs/config-full.config               # 档位 B：完整版 ~31MB，sysupgrade 升级（只出 sysupgrade）
+configs/config-full.config               # 档位 B：完整版 factory 31.5MB / sysupgrade 28.5MB（首编实测）
 diy-part1.sh                            # feeds 兜底校验
 diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + full 档位摘除 factory.bin
 files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/防火墙规则/LuCI 检查更新按钮
@@ -400,22 +400,26 @@ MT7621 是 **mipsel** 架构，不少 Go/Rust 写的现代协议跑不了。逐�
 
 ## 九、体积控制：只有 factory 需要操心
 
-| 档位      | 产物               | 编译期限额               | 预估      |
-| ------- | ---------------- | ------------------- | ------- |
-| minimal | `factory.bin`    | 32MB（check-size 会拦） | ~11MB ✅ |
-| minimal | `sysupgrade.bin` | 无                   | ~11MB   |
-| full    | `sysupgrade.bin` | 无（物理上限 121MB）       | ~31MB ✅ |
+| 档位      | 产物               | 编译期限额               | 首编实测（2026.08.31）  |
+| ------- | ---------------- | ------------------- | ------------------- |
+| minimal | `factory.bin`    | 32MB（check-size 会拦） | **14.88MB** ✅       |
+| minimal | `sysupgrade.bin` | 无                   | 12.34MB             |
+| full    | `factory.bin`    | 32MB（check-size 会拦） | **31.50MB** ✅ 临界但过 |
+| full    | `sysupgrade.bin` | 无（物理上限 121MB）       | 28.54MB ✅           |
 
-**只有 minimal 的 factory.bin 需要盯着。** 万一它超了（编译会在 check-size 处挂掉），按这个顺序砍：
+**minimal 和 full 的 factory.bin 都要盯着 32MB 限额。** full 首编 31.50MB，离上限只剩
+0.5MB 余量——将来往 full 档位加插件要留意，超了编译会直接在 check-size 挂掉。万一超了，
+按这个顺序砍：
 
 1. 注释掉 `config-minimal.config` 里的 `luci-theme-argon` + `luci-app-argon-config`（省 ~1.5MB）
 2. 注释掉 `htop`、`fdisk`、`badblocks`（省 ~1MB）
 3. 去掉 `kmod-fs-ntfs3`（省 ~0.3MB，代价：不能读写 NTFS 格式 U 盘）
 
-full 档位基本不用管，31MB 对 121MB 的 ubi 分区很宽松。
+full 的 sysupgrade 对 121MB 的 ubi 分区很宽松，不用管。
 
-> 上面这些 MB 数都是**估算**。真实体积以第一次编译日志末尾
-> 「固件清单与体积」那一段的输出为准，届时再按实际值校正这张表。
+> 表中数值已是首次编译（tag：`full-2026.08.31-1913` / `minimal-2026.08.31-1912`）
+> 的 Release 实测值。注：该次编译缺 `luci-app-adguardhome`（feed 根目录 Makefile 不被
+> 识别的坑，已修复），补上后 full 体积会再增约 1-2MB，仍在 32MB 内。
 
 ---
 
