@@ -1,0 +1,118 @@
+#!/bin/sh
+#
+# 极路由4增强版 HC5962 旁路由定制脚本
+#
+# 位置: files/etc/uci-defaults/zz-hc5962-custom
+# 执行时机: 首次启动（overlay 为空）时，由 /etc/init.d/boot 调用，
+#           在 config_generate 生成默认配置之后执行，因此这里的值就是最终值。
+# 约定: 脚本必须以 exit 0 结束，否则系统认为失败，不会删除该脚本。
+#
+# 需求映射:
+#   - 固件 IP      : 192.168.112.200
+#   - 网关         : 192.168.112.1
+#   - DNS          : 114.114.114.114
+#   - 关闭 IPv4 DHCP 与 IPv6 的 RA / DHCPv6
+#   - 防火墙 NAT 回程规则
+#
+
+# ------------------------------------------------------------------
+# 1. LAN 接口: IP / 网关 / DNS
+# ------------------------------------------------------------------
+uci -q batch <<'EOF'
+set network.lan.ipaddr='192.168.112.200'
+set network.lan.netmask='255.255.255.0'
+set network.lan.gateway='192.168.112.1'
+set network.lan.dns='114.114.114.114'
+set network.lan.delegate='0'
+commit network
+EOF
+
+# ------------------------------------------------------------------
+# 2. 关闭 IPv6（接口层面）
+# ------------------------------------------------------------------
+uci -q batch <<'EOF'
+set network.lan.ipv6='0'
+set network.wan.ipv6='0'
+set network.wan6.disabled='1'
+commit network
+EOF
+
+# ------------------------------------------------------------------
+# 3. 关闭 IPv4 DHCP + IPv6 的 RA / DHCPv6 / NDP
+# ------------------------------------------------------------------
+uci -q batch <<'EOF'
+set dhcp.lan.ignore='1'
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+set dhcp.lan.ndp='disabled'
+set dhcp.lan.ra_slaac='0'
+set dhcp.lan.ra_management='0'
+set dhcp.lan.ra_flags='none'
+commit dhcp
+EOF
+
+# 彻底停掉 odhcpd（既然 IPv6 全关）
+if [ -x /etc/init.d/odhcpd ]; then
+    /etc/init.d/odhcpd stop 2>/dev/null
+    /etc/init.d/odhcpd disable 2>/dev/null
+fi
+
+# ------------------------------------------------------------------
+# 4. 防火墙: 旁路由 NAT 回程
+#    iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE
+# ------------------------------------------------------------------
+cat > /etc/firewall.user <<'FWEULES'
+# 旁路由模式：LAN 侧回程做源地址伪装
+# 解决主路由(192.168.112.1)下其他网段/静态路由设备回程不到旁路由的问题
+iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE
+FWEULES
+
+# 确保 firewall 配置里有 include 引用 /etc/firewall.user
+if ! uci -q get firewall.user >/dev/null 2>&1; then
+    uci -q batch <<'EOF'
+set firewall.user=include
+set firewall.user.type='script'
+set firewall.user.path='/etc/firewall.user'
+set firewall.user.family='any'
+set firewall.user.reload='1'
+commit firewall
+EOF
+fi
+
+# ------------------------------------------------------------------
+# 5. 主机名与时区
+# ------------------------------------------------------------------
+uci -q batch <<'EOF'
+set system.@system[0].hostname='HC5962'
+set system.@system[0].timezone='CST-8'
+set system.@system[0].zonename='Asia/Shanghai'
+commit system
+EOF
+
+# ------------------------------------------------------------------
+# 6. DNSMASQ: 不对外提供 DHCP，仅保留本地 DNS 解析
+# ------------------------------------------------------------------
+uci -q batch <<'EOF'
+set dhcp.@dnsmasq[0].rebind_protection='0'
+commit dhcp
+EOF
+
+# ------------------------------------------------------------------
+# 7. LuCI 自定义命令: 「检查固件更新」按钮
+#    luci-app-commands 读取 /etc/config/luci 里的 command 段。
+#    效果: LuCI → 系统 → 自定义命令 页面里出现「检查固件更新」，
+#          点击即在网页上看 fw-check-update 的输出（只读，不刷机）。
+#    注意: 只挂检查不挂升级。升级脚本 fw-upgrade 需要人工确认，
+#          必须在 SSH 终端里跑，不能做成网页一键刷机。
+# ------------------------------------------------------------------
+# 依赖的包在 minimal 档位里没有（minimal 不含 jq），先判断再添加
+if [ -x /usr/bin/fw-check-update ] && command -v jq >/dev/null 2>&1; then
+    uci -q batch <<'EOF'
+add luci command
+set luci.@command[-1].name='检查固件更新'
+set luci.@command[-1].command='fw-check-update'
+commit luci
+EOF
+fi
+
+exit 0

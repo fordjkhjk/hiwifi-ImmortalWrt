@@ -1,0 +1,248 @@
+#
+# ImmortalWrt Builder - HiWiFi HC5962 (极路由4增强版)
+#
+# 源码: https://github.com/immortalwrt/immortalwrt   分支: openwrt-23.05
+#
+# 本 workflow 自建，不依赖 P3TERX/Actions-OpenWrt 等任何第三方模板。
+# 结构与依赖列表参考社区通用做法，但 REPO_URL 直接指向 ImmortalWrt 官方源码，
+# 全程不掺入 coolsnowwolf/lede 等第三方发行版。
+#
+# 三种触发方式:
+#   1. 定时   —— 每季度（1/4/7/10 月 1 号）自动编一次 full 档位
+#   2. 手动   —— Actions 页 → 本 workflow → Run workflow → 选 minimal / full / both
+#   3. 外部   —— repository_dispatch（预留，目前没用到）
+#
+# 为什么定时只编 full:
+#   minimal 只在 Breed 首次刷机时用一次，季度重编没意义。更重要的是，同时编两个档位
+#   会产生两个 Release，而路由器端脚本靠 /releases/latest 判断版本，会变得不确定。
+#
+# 前置: 需 Settings → Actions → General → Workflow permissions 设为 Read and write
+#       （否则 Release 上传会 403，但 Artifacts 不受影响）
+#
+# 保活: 定时触发依赖仓库活动，GitHub 对公开仓库有「60 天无活动自动禁用定时任务」的规则。
+#       本仓库另有一个 keepalive.yml（见 .github/workflows/keepalive.yml）每月提交一次，
+#       用来维持仓库活动。两个文件配套使用，缺一不可。
+#
+name: ImmortalWrt HC5962 Builder
+
+on:
+  schedule:
+    # 每季度首月 1 号，北京时间 03:37（避开整点，减少 Actions 排队）
+    - cron: '37 3 1 1,4,7,10 *'
+      timezone: 'Asia/Shanghai'
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      build_profile:
+        description: '编译档位'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - minimal
+          - full
+          - both
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-23.05
+  FEEDS_CONF: feeds.conf.default
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+
+jobs:
+  # 解析档位，把 minimal / full / both 展开成 matrix
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      profiles: ${{ steps.set.outputs.profiles }}
+    steps:
+      - name: Resolve profiles
+        id: set
+        run: |
+          P="${{ github.event.inputs.build_profile }}"
+          # schedule 触发没有 inputs，此时固定只编 full（见文件头注释）
+          if [ "${{ github.event_name }}" = "schedule" ]; then P="full"; fi
+          case "$P" in
+            minimal) echo 'profiles=["minimal"]' >> $GITHUB_OUTPUT ;;
+            full)    echo 'profiles=["full"]'    >> $GITHUB_OUTPUT ;;
+            *)       echo 'profiles=["minimal","full"]' >> $GITHUB_OUTPUT ;;
+          esac
+
+  build:
+    needs: setup
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.setup.outputs.profiles) }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load custom feeds
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: Load custom configuration
+      run: |
+        PROFILE="${{ matrix.profile }}"
+        # 提前生成 release tag，并写进固件的 /etc/hc5962-fw-version。
+        # 必须在编译前做：路由器端的升级脚本靠这个文件比对 GitHub 上的最新版本。
+        # date 用的是 TZ=Asia/Shanghai（本 workflow 顶部 env 已设）。
+        RELEASE_TAG="${PROFILE}-$(date +"%Y.%m.%d-%H%M")"
+        echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
+        echo "::notice::Release tag: $RELEASE_TAG"
+        mkdir -p files/etc
+        echo "$RELEASE_TAG" > files/etc/hc5962-fw-version
+        # 固件升级脚本需要可执行位（zip / 网页上传都会丢权限位，这里兜底）
+        chmod +x files/usr/bin/fw-check-update files/usr/bin/fw-upgrade
+        [ -e files ] && mv files openwrt/files
+        # 本地 LuCI 升级应用（系统 → 固件升级页）拷进源码树。
+        # feeds install 已完成，openwrt/package/ 已存在；minimal 档位的 config 不选它，无影响。
+        [ -e package ] && cp -r package/luci-app-hc5962-upgrade openwrt/package/
+        echo "PROFILE=$PROFILE" >> $GITHUB_ENV
+        echo "::notice::使用配置档位: $PROFILE"
+        cp "configs/config-${PROFILE}.config" openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Upload bin directory
+      uses: actions/upload-artifact@v4
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: openwrt/bin
+
+    - name: Organize files
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    # factory.bin 的 recipe 带 check-size，超 IMAGE_SIZE(32MB) 编译时就直接挂了，
+    # 能走到这一步说明没超。sysupgrade.bin 没有 check-size，它的真实上限是
+    # DTS 里 mtd-concat 拼出来的 ubi 分区（约 121.75MB），这里按 118MB 告警。
+    - name: List firmware size
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      run: |
+        cd $FIRMWARE
+        echo "::group::固件清单与体积"
+        ls -lh *.bin 2>/dev/null || true
+        for f in *.bin; do
+          [ -e "$f" ] || continue
+          SZ=$(stat -c %s "$f")
+          case "$f" in
+            *factory*)    LIM=33554432  ;;   # 32MB
+            *sysupgrade*) LIM=123731968 ;;   # 118MB
+            *)            LIM=33554432  ;;
+          esac
+          echo "$f = $((SZ/1024)) KiB  (限额 $((LIM/1024)) KiB)"
+          if [ "$SZ" -gt "$LIM" ]; then
+            echo "::error::$f 超过 $((LIM/1048576))MB，请精简 configs/config-${{ matrix.profile }}.config"
+          fi
+        done
+        echo "::endgroup::"
+
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware_${{ matrix.profile }}${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: Generate release tag and checksums
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        # tag 在「Load custom configuration」步骤已生成并写入固件，这里直接复用，
+        # 保证 Release 名称与固件内 /etc/hc5962-fw-version 完全一致。
+        echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+        touch release.txt
+        echo "档位: ${{ matrix.profile }}" >> release.txt
+        echo "源码: $REPO_URL@$REPO_BRANCH" >> release.txt
+        echo "固件内版本文件: /etc/hc5962-fw-version" >> release.txt
+        # 生成 sha256sums，路由器端 fw-upgrade 靠它校验下载完整性
+        cd $FIRMWARE
+        sha256sum *.bin > sha256sums
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@v2
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    # 注意: 这里故意保留了两个 P3TERX 模板默认会做的动作，但都没启用：
+    #
+    #   1. "Delete workflow runs"  —— 在 matrix 并行任务里，后完成的任务会把
+    #      先完成任务的历史记录连同 Artifacts 一起删掉，固件就下载不到了。
+    #   2. "Remove old Releases"   —— Release 里放的是编译好的固件，属于要留存的
+    #      资产，自动删除风险大于收益。要清理手动删即可。

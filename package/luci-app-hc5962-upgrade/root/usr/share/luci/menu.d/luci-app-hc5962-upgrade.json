@@ -1,0 +1,13 @@
+{
+	"admin/system/hc5962-upgrade": {
+		"title": "固件升级",
+		"order": 65,
+		"action": {
+			"type": "view",
+			"path": "hc5962-upgrade/upgrade"
+		},
+		"depends": {
+			"acl": [ "luci-app-hc5962-upgrade" ]
+		}
+	}
+}

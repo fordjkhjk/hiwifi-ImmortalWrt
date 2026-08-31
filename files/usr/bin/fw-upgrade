@@ -1,0 +1,121 @@
+#!/bin/sh
+# fw-upgrade — 从 GitHub 下载新固件并刷入（带安全闸门）
+#
+# 流程: 查询最新 Release → 下载 sysupgrade.bin 到 /tmp（内存盘）
+#       → sha256 校验 → sysupgrade -T 试刷校验 → 人工确认 → 正式刷入
+#
+# 用法:
+#   fw-upgrade           正常升级（保留现有配置）——交互式，最后需输入 y
+#   fw-upgrade -y        跳过人工确认（网页一键升级用；网页的确认词代替了 y）
+#   fw-upgrade -n        不保留配置，全部恢复默认（慎用）
+#   fw-upgrade -y -n     跳过确认且不保留配置（组合）
+#
+# 注意:
+#   * 刷机过程中会断网断电风险自负——确认路由器供电稳定再执行
+#   * 固件里烘焙的插件会升级；之前用 iStore/opkg 装的插件会被清掉
+#   * 全程约 3-5 分钟，路由器会自动重启，内网 IP 不变
+#   * 仓库地址可在 /etc/hc5962-upgrade.conf 里覆盖（分享固件给别人时改）
+
+# 仓库地址可配置（默认作者仓库；分享固件给别人时改 /etc/hc5962-upgrade.conf）
+[ -f /etc/hc5962-upgrade.conf ] && . /etc/hc5962-upgrade.conf
+REPO="${REPO:-fordjkhjk/hiwifi-ImmortalWrt}"
+API="https://api.github.com/repos/$REPO/releases/latest"
+VER_FILE="/etc/hc5962-fw-version"
+DL_BIN="/tmp/fw-sysupgrade.bin"
+DL_SUM="/tmp/fw-sha256sums"
+
+# ---- 工具检查 -------------------------------------------------------------
+for t in curl jq sha256sum sysupgrade; do
+    command -v "$t" >/dev/null 2>&1 || { echo "错误: 缺少 $t。"; exit 1; }
+done
+
+# ---- 解析参数 -------------------------------------------------------------
+SYSSW_OPTS=""
+SKIP_CONFIRM="no"
+for a in "$@"; do
+    case "$a" in
+        -n) SYSSW_OPTS="-n" ;;
+        -y) SKIP_CONFIRM="yes" ;;
+        *)  echo "用法: fw-upgrade [-n] [-y]"; exit 1 ;;
+    esac
+done
+
+# ---- 查询最新版本 ---------------------------------------------------------
+echo "[1/6] 查询最新 Release ..."
+JSON="$(curl -sf --max-time 30 -H 'Accept: application/vnd.github+json' "$API")"
+[ -n "$JSON" ] || { echo "错误: 访问 GitHub API 失败。"; exit 1; }
+
+TAG="$(echo "$JSON" | jq -r '.tag_name')"
+BIN_URL="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .browser_download_url' | head -n1)"
+BIN_NAME="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .name' | head -n1)"
+BIN_SIZE="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .size' | head -n1)"
+SUM_URL="$(echo "$JSON" | jq -r '.assets[] | select(.name == "sha256sums") | .browser_download_url' | head -n1)"
+LOCAL="$(cat "$VER_FILE" 2>/dev/null)"
+
+[ -n "$BIN_URL" ] || { echo "错误: Release 里找不到 sysupgrade 固件。"; exit 1; }
+
+echo "      当前: ${LOCAL:-未知}   最新: $TAG"
+if [ "$TAG" = "$LOCAL" ]; then
+    echo "      已经是最新版本。仍要重刷请继续（一般用于修复）。"
+fi
+
+# ---- 空间检查（/tmp 是内存盘，固件约 31MB） --------------------------------
+NEED=$(( BIN_SIZE / 1024 + 4096 ))   # 固件本体 + 4MB 余量
+AVAIL="$(df -k /tmp | awk 'NR==2 {print $4}')"
+if [ "$AVAIL" -lt "$NEED" ]; then
+    echo "错误: /tmp 空间不足（需要 $((NEED/1024))MB，现有 $((AVAIL/1024))MB）。"
+    echo "      内存盘空间随内存占用浮动，等几分钟或重启路由器后重试。"
+    exit 1
+fi
+
+# ---- 下载 -----------------------------------------------------------------
+echo "[2/6] 下载固件 ($BIN_NAME, $((BIN_SIZE/1048576))MB) ..."
+curl -sfL --max-time 600 -o "$DL_BIN" "$BIN_URL" || { echo "错误: 下载失败。"; exit 1; }
+
+# ---- 校验 sha256 ----------------------------------------------------------
+echo "[3/6] 校验完整性 (sha256) ..."
+if [ -n "$SUM_URL" ]; then
+    curl -sfL --max-time 60 -o "$DL_SUM" "$SUM_URL" || true
+fi
+if [ -s "$DL_SUM" ]; then
+    EXPECT="$(awk -v f="$BIN_NAME" '$2 == f {print $1}' "$DL_SUM")"
+else
+    # 兜底: GitHub API 的 assets 自带 digest 字段 (sha256:...)
+    EXPECT="$(echo "$JSON" | jq -r ".assets[] | select(.name == \"$BIN_NAME\") | .digest" | sed 's/^sha256://')"
+fi
+ACTUAL="$(sha256sum "$DL_BIN" | awk '{print $1}')"
+if [ -z "$EXPECT" ] || [ "$EXPECT" != "$ACTUAL" ]; then
+    echo "错误: sha256 校验失败！"
+    echo "  期望: $EXPECT"
+    echo "  实际: $ACTUAL"
+    echo "  下载文件已保留在 $DL_BIN，可手动比对。请勿刷入。"
+    exit 1
+fi
+echo "      校验通过 ✅"
+
+# ---- 试刷校验 -------------------------------------------------------------
+echo "[4/6] sysupgrade -T 验证镜像（不刷入）..."
+if ! sysupgrade -T "$DL_BIN"; then
+    echo "错误: 镜像验证失败，镜像与本机不匹配。请勿刷入。"
+    exit 1
+fi
+echo "      验证通过 ✅"
+
+# ---- 人工确认 -------------------------------------------------------------
+echo "[5/6] 即将刷入: $TAG"
+echo "      模式: $([ -n "$SYSSW_OPTS" ] && echo '全新（不保留配置）' || echo '保留现有配置')"
+echo "      刷机约 3 分钟，期间请勿断电；完成后自动重启。"
+if [ "$SKIP_CONFIRM" != "yes" ]; then
+    printf "      确认刷入? [y/N] "
+    read reply
+    case "$reply" in
+        y|Y) ;;
+        *)   echo "已取消。"; exit 1 ;;
+    esac
+else
+    echo "      （-y 模式: 确认已由网页端完成）"
+fi
+
+# ---- 正式刷入 -------------------------------------------------------------
+echo "[6/6] 开始刷入 ..."
+exec sysupgrade $SYSSW_OPTS "$DL_BIN"

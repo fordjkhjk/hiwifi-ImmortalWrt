@@ -1,0 +1,42 @@
+#
+# Keepalive - 维持仓库活动，防止定时任务被 GitHub 自动禁用
+#
+# 背景: GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任务」的规则。
+#       主 workflow (openwrt-builder.yml) 每季度才跑一次，间隔远超 60 天。
+#       本 workflow 每月 1 号提交一次时间戳文件，让仓库活动间隔永远不超过 ~31 天。
+#
+# 说明: 「机器人提交也算 repository activity」是社区通行做法，GitHub 未明文定义
+#       activity 的范围；如发现定时任务仍被禁用，改用手动 Run workflow 一次即可
+#       重新启用（Actions 页 → 被禁用的 workflow → Enable workflow）。
+#
+# 注意: 这个 workflow 提交的是 master/main 分支上的 .last-keepalive 文件，
+#       不会触发主 workflow（主 workflow 只有 schedule/dispatch/外部触发，没有 push）。
+#
+name: Keepalive
+
+on:
+  schedule:
+    # 每月 1 号北京时间 04:23（避开整点，减少 Actions 排队；
+    # 与主 workflow 的季度编译 03:37 错开，同一天时互不抢 runner）
+    - cron: '23 4 1 * *'
+      timezone: 'Asia/Shanghai'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Commit activity marker
+        run: |
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .last-keepalive
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .last-keepalive
+          # 内容没变就不产生空提交（手动补跑时常见）
+          git diff --cached --quiet || git commit -m "chore: keepalive"
+          git push

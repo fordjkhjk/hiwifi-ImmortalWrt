@@ -1,0 +1,98 @@
+#!/bin/sh
+# fw-check-update — 检查 GitHub 上有没有新固件（只读操作，不下载不刷机）
+#
+# 配套: 固件内 /etc/hc5962-fw-version 记录当前版本（编译时由 workflow 写入）
+#       Release 里附 sha256sums（校验用，本脚本只展示）
+#       仓库地址可在 /etc/hc5962-upgrade.conf 里覆盖（分享固件给别人时改）
+#
+# 用法: fw-check-update [--json]
+#   --json  输出机器可读 JSON，供 LuCI 网页升级页（系统 → 固件升级）解析
+# 退出码: 0 正常（无论有无新版本） / 1 出错（网络、缺工具等）
+#
+# GitHub API 未认证限额 60 次/小时，家用检查频率绰绰有余。
+
+MODE="text"
+case "$1" in
+    --json) MODE="json" ;;
+    "") ;;
+    *) echo "用法: fw-check-update [--json]"; exit 1 ;;
+esac
+
+# 仓库地址可配置（默认作者仓库；分享固件给别人时改 /etc/hc5962-upgrade.conf）
+[ -f /etc/hc5962-upgrade.conf ] && . /etc/hc5962-upgrade.conf
+REPO="${REPO:-fordjkhjk/hiwifi-ImmortalWrt}"
+API="https://api.github.com/repos/$REPO/releases/latest"
+VER_FILE="/etc/hc5962-fw-version"
+
+# ---- 工具检查 -------------------------------------------------------------
+if ! command -v curl >/dev/null 2>&1; then
+    echo "错误: 缺少 curl，无法联网检查。"
+    exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+    echo "错误: 此固件不含 jq（minimal 档位），无法在线检查更新。"
+    echo "请先手动刷入 full 档位固件后再使用本功能。"
+    exit 1
+fi
+
+# ---- 当前版本 -------------------------------------------------------------
+LOCAL="$(cat "$VER_FILE" 2>/dev/null)"
+
+# ---- 查询 GitHub ----------------------------------------------------------
+JSON="$(curl -sf --max-time 30 -H 'Accept: application/vnd.github+json' "$API")"
+if [ -z "$JSON" ]; then
+    [ "$MODE" = "json" ] && echo '{"error":"访问 GitHub 失败（网络不通或超出限额）"}'
+    echo "错误: 访问 GitHub API 失败（网络不通或超出限额）。"
+    echo "如果路由器时间不准会导致 HTTPS 握手失败，请先校时: date"
+    exit 1
+fi
+
+TAG="$(echo "$JSON" | jq -r '.tag_name')"
+PUBLISHED="$(echo "$JSON" | jq -r '.published_at' | cut -c1-10)"
+ASSET_NAME="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .name' | head -n1)"
+ASSET_SIZE="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .size' | head -n1)"
+
+if [ -z "$ASSET_NAME" ]; then
+    [ "$MODE" = "json" ] && echo '{"error":"最新 Release 里找不到 sysupgrade 固件"}'
+    echo "错误: 最新 Release 里找不到 sysupgrade 固件。"
+    exit 1
+fi
+SIZE_MB=$(( ASSET_SIZE / 1048576 ))
+
+# ---- 判断是否可升级 -------------------------------------------------------
+if [ -z "$LOCAL" ]; then
+    UPDATABLE="null"
+elif [ "$TAG" = "$LOCAL" ]; then
+    UPDATABLE="false"
+else
+    UPDATABLE="true"
+fi
+
+# ---- 输出 ----------------------------------------------------------------
+if [ "$MODE" = "json" ]; then
+    jq -n \
+        --arg current "${LOCAL:-}" \
+        --arg latest "$TAG" \
+        --arg published "$PUBLISHED" \
+        --arg file "$ASSET_NAME" \
+        --argjson size_mb "$SIZE_MB" \
+        --argjson updatable "$UPDATABLE" \
+        '{current: $current, latest: $latest, published: $published, file: $file, size_mb: $size_mb, updatable: $updatable}'
+    exit 0
+fi
+
+echo "======================================"
+echo " 当前版本 : ${LOCAL:-未知（旧版固件）}"
+echo " 最新版本 : $TAG  ($PUBLISHED)"
+echo " 固件文件 : $ASSET_NAME (${SIZE_MB}MB)"
+echo "======================================"
+
+if [ -z "$LOCAL" ]; then
+    echo "结论: 无法比对，建议升级一次以获得版本信息。"
+    echo "升级命令: fw-upgrade"
+elif [ "$TAG" = "$LOCAL" ]; then
+    echo "结论: 已是最新版本 ✅"
+else
+    echo "结论: 有新版本可升级 ⬆"
+    echo "升级命令: fw-upgrade"
+fi
