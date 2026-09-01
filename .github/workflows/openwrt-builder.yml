@@ -183,8 +183,10 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    # factory.bin 的 recipe 带 check-size，超 IMAGE_SIZE(32MB) 编译时就直接挂了，
-    # 能走到这一步说明没超。sysupgrade.bin 没有 check-size，它的真实上限是
+    # factory.bin 的 recipe 带 check-size：超 IMAGE_SIZE(32MB) 时 check-size
+    # 只会告警并删掉该文件，编译流程继续，不影响 sysupgrade.bin 产出
+    # （full 档位在 diy-part2.sh 里已把 factory.bin 从 IMAGES 摘掉，根本不生成）。
+    # sysupgrade.bin 没有 check-size，它的真实上限是
     # DTS 里 mtd-concat 拼出来的 ubi 分区（约 121.75MB），这里按 118MB 告警。
     - name: List firmware size
       if: steps.organize.outputs.status == 'success' && !cancelled()

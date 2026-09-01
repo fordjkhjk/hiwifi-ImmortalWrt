@@ -107,11 +107,15 @@ ubiconcat1  0x2240000  93.25MB ┘
 
 ### 2. 为什么是 openwrt-23.05 而不是 24.10
 
-|                                        | 23.05                    | 24.10                |
-| -------------------------------------- | ------------------------ | -------------------- |
-| 防火墙后端                                  | firewall3 + **iptables** | firewall4 + nftables |
-| 你的 `iptables -t nat -A POSTROUTING...` | 直接可用                     | 需装兼容层，易失效            |
+|                                        | 23.05（本项目实际形态）        | 24.10                |
+| -------------------------------------- | ------------------------------ | -------------------- |
+| 防火墙后端                                  | **firewall4 + nftables**（实测） | firewall4 + nftables |
+| 你的 `iptables -t nat -A POSTROUTING...` | 已改写为 nftables 烘焙进 `/etc/nftables.d/10-lan-masq.nft`，直接生效 | 同样按 nftables 写法 |
 | ssr+ 支持                                | 成熟稳定                     | 透明代理/分流不完善           |
+
+> 注：早期这份配置想"显式切回 firewall3"，实测被 defconfig 静默推翻
+> （`CONFIG_PACKAGE_firewall=y` 被降级成 `=m`，fw4 照装），所以固件里实际
+> 就是 firewall4。自定义规则已全部改成 `/etc/nftables.d/*.nft` 写法。
 
 结论：**23.05 更适配你的需求**。代价是 AdGuard Home 的 LuCI 界面在官方 23.05 feed 里没有，用社区包补（见下）。
 
@@ -161,7 +165,8 @@ configs/config-minimal.config           # 档位 A：精简版 ~11MB，Breed 首
 configs/config-full.config               # 档位 B：完整版 factory 31.5MB / sysupgrade 28.5MB（首编实测）
 diy-part1.sh                            # feeds 兜底校验
 diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + full 档位摘除 factory.bin
-files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/防火墙规则/LuCI 检查更新按钮
+files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/旧防火墙残留清理/LuCI 检查更新按钮
+files/etc/nftables.d/10-lan-masq.nft    # 旁路由 NAT 回程规则（fw4 自动 include，见第十一章）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
@@ -175,7 +180,7 @@ package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系�
 - DNS `114.114.114.114`
 - `dhcp.lan.ignore=1` → 关闭 IPv4 DHCP
 - `ra=disabled` `dhcpv6=disabled` `ndp=disabled` + 停用 odhcpd → 关闭 IPv6
-- `/etc/firewall.user` 写入 `iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE`
+- `/etc/nftables.d/10-lan-masq.nft` 写入 `oifname "br-lan" masquerade`（fw4 只认这个目录，iptables 写法已失效）
 
 ---
 
@@ -370,7 +375,8 @@ MT7621 是 **mipsel** 架构，不少 Go/Rust 写的现代协议跑不了。逐�
 | `INCLUDE_DNS2SOCKS`                 | `dns2socks`                                 | Makefile 默认 y，体积极小                                                          |
 | `INCLUDE_IPT2Socks`                 | `ipt2socks`                                 | Xray 透明代理链路要用到                                                              |
 
-透明代理后端用 `Iptables_Transparent_Proxy`（23.05 是 firewall3，选这个才对），  
+透明代理后端用 `Iptables_Transparent_Proxy`（ssr+ 的 ipset 分流方案，与防火墙后端
+是 firewall4 不冲突——它走 iptables 命令行 + ipset，fw4 管的是 nftables 那套规则表），  
 它会自动 select `dnsmasq-full(ipset)` + `ipset` + 若干 `iptables-mod-*`。
 
 ### 按需开启（默认全关）
@@ -490,35 +496,33 @@ LuCI 的「网络 → 防火墙 → 常规设置」里那两个开关：
 
 ---
 
-## 十一、防火墙规则（一直在，是我没主动跟你说）
+## 十一、防火墙规则（fw4 + nftables 写法）
 
-你要的那条规则写在 `files/etc/uci-defaults/zz-hc5962-custom` 第 60–68 行：
+你要的那条旁路由回程规则，本体烘焙在 `files/etc/nftables.d/10-lan-masq.nft`：
 
-```sh
-cat > /etc/firewall.user <<'FWEULES'
-# 旁路由模式：LAN 侧回程做源地址伪装
-# 解决主路由(192.168.112.1)下其他网段/静态路由设备回程不到旁路由的问题
-iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE
-FWEULES
-
-# 确保 firewall 配置里有 include 引用 /etc/firewall.user
-if ! uci -q get firewall.user >/dev/null 2>&1; then
-    uci -q batch <<'EOF'
-set firewall.user=include
-set firewall.user.type='script'
-set firewall.user.path='/etc/firewall.user'
-set firewall.user.family='any'
-set firewall.user.reload='1'
-commit firewall
-EOF
-fi
+```nft
+table ip nat {
+	chain lan_masq {
+		type nat hook postrouting priority 100; policy accept;
+		oifname "br-lan" masquerade
+	}
+}
 ```
+
+**为什么不是原来的 iptables 写法**：ImmortalWrt 23.05 的默认防火墙是
+firewall4 + nftables，fw4 **不执行 `/etc/firewall.user`**（`fw4.uc` 里
+`fw4_compatible` 默认 false，script 型 include 从不加载），只认
+`/etc/nftables.d/*.nft`。旧固件里那条 iptables MASQUERADE 实际是**失效**的。
+
+`zz-hc5962-custom` 第 4 节现在只做旧残留清理：删掉 `/etc/firewall.user`、
+删掉 uci 里的 `firewall.user` include 段（防止从旧固件 sysupgrade 后
+把失效的 fw3 配置带过来）。
 
 刷机后 SSH 到 192.168.112.200 验证：
 
 ```sh
-cat /etc/firewall.user            # 应看到那条 iptables 规则
-iptables -t nat -S POSTROUTING    # 应看到 -A POSTROUTING -o br-lan -j MASQUERADE
+nft list chain ip nat lan_masq      # 应看到 oifname "br-lan" masquerade
+nft list ruleset | grep -n lan_masq # 确认规则真的进了当前 ruleset
 ```
 
 ---
@@ -624,7 +628,7 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | 烘焙进固件的插件（ssr+、AdGuard Home、ZeroTier、vlmcsd 等） | ✅ 升级到新版本 |
 | LuCI 里的设置、无线密码、ssr+ 节点配置 | ✅ 保留 |
 | iStore / opkg 手动装的插件 | ❌ 清掉，需重装 |
-| `/etc/firewall.user` 及 uci-defaults 已生效的定制 | ✅ 保留（conffiles 机制） |
+| `/etc/nftables.d/10-lan-masq.nft`（/rom 烘焙）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
 
 第一行就是「长期必用烘焙、偶尔尝鲜走 iStore」分层策略的落点。
 

@@ -1,0 +1,19 @@
+# 旁路由模式：LAN 侧回程做源地址伪装
+#
+# 解决主路由(192.168.112.1)下其他网段/静态路由设备回程不到旁路由的问题。
+# 原 iptables 写法: iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE
+#
+# 为什么换成 nftables：
+#   ImmortalWrt 23.05 默认防火墙是 firewall4，fw4 不执行 /etc/firewall.user
+#   （fw4.uc 的 fw4_compatible 默认 false，script 型 include 从不加载），
+#   它只认 /etc/nftables.d/*.nft。本文件由 fw4 的 ruleset 自动 include。
+#
+# 语法说明：
+#   - oifname "br-lan"  出口接口是 LAN 桥（字符串匹配，接口未起也不报错）
+#   - masquerade        等价于 iptables 的 MASQUERADE（源地址伪装）
+table ip nat {
+	chain lan_masq {
+		type nat hook postrouting priority 100; policy accept;
+		oifname "br-lan" masquerade
+	}
+}

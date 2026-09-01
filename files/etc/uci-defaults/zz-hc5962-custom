@@ -58,26 +58,29 @@ if [ -x /etc/init.d/odhcpd ]; then
 fi
 
 # ------------------------------------------------------------------
-# 4. 防火墙: 旁路由 NAT 回程
-#    iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE
+# 4. 防火墙: 旁路由 NAT 回程（fw4 + nftables 写法）
+#
+# 规则本体烘焙在 /rom 的 files/etc/nftables.d/10-lan-masq.nft：
+#     table ip nat { chain lan_masq { type nat hook postrouting
+#     priority 100; policy accept; oifname "br-lan" masquerade } }
+#
+# 为什么不用 /etc/firewall.user：ImmortalWrt 23.05 默认防火墙是 firewall4，
+# fw4 不执行 /etc/firewall.user（fw4_compatible 默认 false），只认
+# /etc/nftables.d/*.nft。旧固件里那条 iptables 规则实际是失效的。
+# 这里只做旧残留清理，防止从旧固件 sysupgrade 后把失效的 fw3 配置带过来。
 # ------------------------------------------------------------------
-cat > /etc/firewall.user <<'FWEULES'
-# 旁路由模式：LAN 侧回程做源地址伪装
-# 解决主路由(192.168.112.1)下其他网段/静态路由设备回程不到旁路由的问题
-iptables -t nat -A POSTROUTING -o br-lan -j MASQUERADE
-FWEULES
-
-# 确保 firewall 配置里有 include 引用 /etc/firewall.user
-if ! uci -q get firewall.user >/dev/null 2>&1; then
+# 删除旧 fw3 时代写入的 /etc/firewall.user（本脚本仅在首次开机 overlay 为空时
+# 执行，此时 /etc/firewall.user 只可能来自 /rom 烘焙，而我们从不烘焙它，安全）
+rm -f /etc/firewall.user
+# 删除 uci 里指向它的 include 段（如有）
+if uci -q get firewall.user >/dev/null 2>&1; then
     uci -q batch <<'EOF'
-set firewall.user=include
-set firewall.user.type='script'
-set firewall.user.path='/etc/firewall.user'
-set firewall.user.family='any'
-set firewall.user.reload='1'
+delete firewall.user
 commit firewall
 EOF
 fi
+# 确保 nftables.d 目录存在（fw4 ruleset 会 include 这个目录下的 *.nft）
+mkdir -p /etc/nftables.d
 
 # ------------------------------------------------------------------
 # 5. 主机名与时区
