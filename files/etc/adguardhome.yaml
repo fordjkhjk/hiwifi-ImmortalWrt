@@ -1,0 +1,95 @@
+# AdGuard Home 烘焙配置（全新刷机时生效）
+#
+# 在 DNS 链路里的角色：总管家 —— 广告过滤 + 缓存 + 把查询转给 mosdns。
+#   dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流
+#
+# 关键项（与商定一致）：
+#   - 上游 DNS：只一行 127.0.0.1:5353（mosdns），不做并行多上游
+#   - 请求方式：负载均衡（单上游时语义干净）
+#   - 速度限制：0（不限，避免误伤浏览器并发查询）
+#   - 禁用 IPv6 解析：开（家里无 IPv6）
+#   - 缓存：4MB（保持现状）
+#   - 乐观缓存：关（保持现状）
+#   - 覆盖 TTL：0/0（保持现状）
+#
+# 注意：users 留空 → 首次打开 web 界面（http://<路由器IP>:3000）会进入
+# 设置向导，让你设置管理员账号密码，之后即按本配置运行。
+# 广告过滤的订阅规则列表不在此烘焙，首次进界面后自行添加（与旧库一致）。
+
+http:
+  address: 0.0.0.0:3000
+  session_ttl: 720h
+
+users: []
+
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 5335
+  ratelimit: 0
+  refuse_any: true
+  upstream_dns:
+    - 127.0.0.1:5353
+  upstream_dns_file: ''
+  bootstrap_dns: []
+  fallback_dns: []
+  upstream_mode: load_balance
+  fastest_timeout: 1s
+  allowed_clients: []
+  disallowed_clients: []
+  blocked_hosts: []
+  trusted_proxies: []
+  cache_size: 4194304
+  cache_ttl_min: 0
+  cache_ttl_max: 0
+  cache_optimistic: false
+  bogus_nxdomain: []
+  aaaa_disabled: true
+  enable_dnssec: false
+  edns_client_subnet: false
+  max_goroutines: 300
+  handle_ddr: true
+  ipset: []
+  ipset_file: ''
+  bootstrap_prefer_ipv6: false
+  upstream_timeout: 10s
+  private_networks: []
+  use_private_ptr_resolvers: false
+  local_ptr_upstreams: []
+  use_dns64: false
+  dns64_prefixes: []
+  serve_http3: false
+  use_http3_upstreams: false
+  serve_plain_dns: true
+  hostsfile_enabled: true
+
+filtering:
+  protection_enabled: true
+  filtering_enabled: true
+  parental_enabled: false
+  safebrowsing_enabled: false
+  safe_search:
+    enabled: false
+  blocking_mode: default
+  blocked_response_ttl: 10
+  filters_update_interval: 24
+  rewrites: []
+  blocked_services: []
+  blocked_services_schedule:
+    time_zone: UTC
+  safebrowsing_block_host: standard-block.dns.adguard.com
+  parental_block_host: family-block.dns.adguard.com
+  safebrowsing_cache_size: 1048576
+  safesearch_cache_size: 1048576
+  parental_cache_size: 1048576
+  cache_time: 30
+
+querylog:
+  enabled: true
+  interval: 90
+  anonymize_client_ip: false
+
+statistics:
+  enabled: true
+  interval: 1
+  ignored: []

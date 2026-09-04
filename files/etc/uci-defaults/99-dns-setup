@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# DNS 链路首启固化脚本
+#
+# 位置: files/etc/uci-defaults/99-dns-setup
+# 执行时机: 首次启动（overlay 为空）时执行一次，exit 0 后自动删除。
+#
+# 作用: 固化「dnsmasq:53 → AdGuard Home:5335 → mosdns:5353」这条链：
+#   1. dnsmasq 转发到 AGH（127.0.0.1#5335），并关闭 resolvfile（noresolv）
+#      否则 dnsmasq 会读 /tmp/resolv.conf 的上游，绕过 AGH。
+#   2. 启用 AdGuard Home（官方包默认 enabled=0，需置 1）。
+#   （mosdns 无需处理：官方包 init 无开关，固件编译时已被统一 enable，
+#     开机即随正确配置启动。ssr+ 的 DNS 模式字段 pdnsd_enable 默认即 0 =
+#     使用本机 5335，也无需处理。）
+
+# 1. dnsmasq：转发到 AdGuard Home，并停止读 /tmp/resolv.conf 的上游
+uci -q batch <<'EOF'
+delete dhcp.@dnsmasq[0].server
+add_list dhcp.@dnsmasq[0].server='127.0.0.1#5335'
+set dhcp.@dnsmasq[0].noresolv='1'
+commit dhcp
+EOF
+
+# 2. AdGuard Home：启用（段名 config，官方包默认 enabled=0）
+uci -q set adguardhome.config.enabled='1'
+uci -q commit adguardhome
+
+# 3. 让 dnsmasq 新配置生效，并登记 AGH 开机自启
+/etc/init.d/dnsmasq restart 2>/dev/null
+/etc/init.d/adguardhome enable 2>/dev/null
+
+exit 0

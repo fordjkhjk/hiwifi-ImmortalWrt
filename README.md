@@ -130,24 +130,28 @@ ubiconcat1  0x2240000  93.25MB ┘
 | AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
 | ZeroTier     | `zerotier` + `luci-app-zerotier`       | **纯官方 packages / luci 源，不需要任何第三方源**。本体约 500KB，依赖 `kmod-tun`（TUN/TAP 虚拟网卡）                            |
 | vlmcsd (KMS) | `vlmcsd` + `luci-app-vlmcsd`           | **纯官方 packages / luci 源**。本体仅 23KB，用于局域网内 Windows / Office 的 KMS 激活                                  |
-| mosdns       | `mosdns`                              | **纯官方 packages 源**（`net/mosdns`，v5.3.3，Go 程序）。AGH 的下游分流器，见「十二·五」章                                  |
+| mosdns       | `mosdns`                              | **纯官方 packages 源**（`net/mosdns`，v5.3.3，Go 程序）。AGH 的下游分流器。注意 v5.3.3 不支持 geosite.dat 二进制，国内域名名单改用纯文本列表 `files/etc/mosdns/cn.txt` 走 `domain_set` 加载，见「十二·五」章 |
 
-### 5. 插件「只烘焙、不默认运行」的约定
+### 5. 插件的默认运行状态
 
-full 档位里这几个功能组件，遵循同一条原则：**编译进固件（刷机后前端可打开），但开机默认不启动**，等你真正要用时再手动启用。这样既不占内存、不抢端口，也避免一刷机就带着一堆没人用的服务在跑。
+full 档位里的功能组件分两类：**DNS 链（AGH + mosdns）默认运行**，**其余（ssr+ / ZeroTier / KMS）默认不运行**。这样 DNS 广告过滤 + 分流一刷机就生效，而代理、组网、KMS 这类需要你手动配置的服务保持关闭、不抢资源。
 
 | 组件 | 前端入口 | 默认状态 | 说明 |
 |---|---|---|---|
-| ssr+ | 服务 → ShadowSocksR Plus+ | 未启动 | 装好即带，但节点、模式都要你配置后才真正生效 |
-| AdGuard Home | 服务 → AdGuard Home | 未启用 | uci `adguardhome.config.enabled=0`，点「启用」才起服务 |
+| AdGuard Home | 服务 → AdGuard Home | **运行** | 烘焙配置 + 首启置 `adguardhome.config.enabled=1`，刷机即起，监听 5335，首次进 `:3000` 界面设账号密码即可 |
+| mosdns | **无 web 前端**（后台组件） | **运行** | 官方包 init 无开关，编译时统一 enable，随 `files/etc/mosdns/config.yaml` 起在 5353 |
+| ssr+ | 服务 → ShadowSocksR Plus+ | 未启动 | 装好即带，但节点、模式都要你配置后才真正生效（DNS 模式默认 0 = 本机 5335） |
 | ZeroTier | VPN → ZeroTier | 未启用 | uci `zerotier.global.enabled=0`，填 Network ID 并勾启用才连 |
 | vlmcsd (KMS) | 服务 → vlmcsd | 未启用 | uci `vlmcsd.config.enabled=0`，勾启用才监听 1688 |
-| mosdns | **无 web 前端**（后台组件） | 已装、未启动 | 官方 luci 源没有 luci-app-mosdns（23.05/24.10 均无），配置走 SSH：传文件到 `/etc/mosdns/` 后 `/etc/init.d/mosdns enable && start` |
 
-> 这几个包的「默认不运行」不是本仓库额外做的开关，而是**官方包自带的默认值就是 `enabled='0'`**
-> （已逐个核对 init 脚本：AGH 读 `adguardhome.config.enabled`、zerotier 读 `zerotier.global.enabled`、
-> vlmcsd 读 `vlmcsd.config.enabled`，均为 0）。所以「只烘焙、不默认运行」是现状的自然结果，
-> 无需额外脚本去关它。
+> **默认运行怎么实现的**：AGH 走 `files/etc/uci-defaults/99-dns-setup` 首启脚本把
+> `adguardhome.config.enabled` 置 1（官方包 init 本来默认 0）；mosdns 官方包 init 没有开关，
+> 固件编译时所有 `/etc/init.d/*` 会被统一 enable，所以刷机即起、读烘焙好的 config.yaml。
+> dnsmasq 也由同一脚本改成转发 `127.0.0.1#5335`（并 noresolv），整条
+> `dnsmasq:53 → AGH:5335 → mosdns:5353` 链首启自动就位，无需手动做任何事。
+>
+> 其余三个「不默认运行」是**官方包自带默认值就是 `enabled='0'`**（zerotier 读
+> `zerotier.global.enabled`、vlmcsd 读 `vlmcsd.config.enabled`），无需额外脚本去关。
 
 ### 4. 为什么选 ImmortalWrt 而不是 Lean 的 LEDE
 
@@ -184,6 +188,10 @@ configs/config-full.config               # 档位 B：完整版 factory 31.5MB /
 diy-part1.sh                            # feeds 兜底校验
 diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + full 档位摘除 factory.bin
 files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/旧防火墙残留清理/LuCI 检查更新按钮
+files/etc/uci-defaults/99-dns-setup    # 首启固化 DNS 链：dnsmasq 转发 5335 + 启用 AGH（见第五、七、十二·五章）
+files/etc/adguardhome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、4MB 缓存）
+files/etc/mosdns/config.yaml           # mosdns v5.3.3 分流配置（监听 5353，国内外分流，见十二·五章）
+files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dnsmasq-china-list 转换）
 files/etc/nftables.d/10-lan-masq.nft    # 旁路由 NAT 回程规则（fw4 自动 include，见第十一章）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
@@ -344,11 +352,15 @@ df -h             # 查看挂载点
 
 ---
 
-## 七、AdGuard Home 与 dnsmasq 的端口冲突（必做）
+## 七、AdGuard Home 与 dnsmasq 的端口冲突
 
-固件里 dnsmasq 已占用 53 端口，AdGuard Home 默认也要 53，二者会打架。推荐做法：
+固件里 dnsmasq 已占用 53 端口，AdGuard Home 默认也要 53，二者会打架。
 
-**AdGuard Home 网页界面 → 设置 → DNS 设置**
+> **full 档位全新刷机无需手动做**：`files/etc/adguardhome.yaml` 已把 AGH 端口烘焙为
+> `5335`，`files/etc/uci-defaults/99-dns-setup` 首启自动把 dnsmasq 上游指向
+> `127.0.0.1#5335` 并 noresolv。下面这套手动步骤只作「理解原理 / 在旧固件上手动搭」的参考。
+
+**手动场景（参考）—— AdGuard Home 网页界面 → 设置 → DNS 设置**
 
 - 端口改为 `5335`
 
@@ -592,34 +604,57 @@ slmgr /ato
 
 本固件的 DNS 链是：`dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流`。
 
-- AGH 负责**广告过滤 + 缓存**（占 5335，dnsmasq 上游指它）
-- mosdns 负责**按域名名单分流**：国内域名（geosite:cn）直连国内 DNS（如 223.5.5.5），
-  国外域名走代理隧道查 8.8.8.8，避免污染
+- AGH 负责**广告过滤 + 缓存**（占 5335，dnsmasq 上游指它），查完转给 mosdns
+- mosdns 负责**按域名名单分流**：国内域名直连国内 DNS（5 家并行取最快），
+  国外域名走 socks5 隧道查 8.8.8.8 防污染、隧道不可用时直连兜底
 
 为什么需要 mosdns 而不是让 AGH 直接分流：**AGH 的 upstream 不支持 socks5**，
 它没法把查询送进梯子；而「国外域名在隧道内解析」必须由会走 socks5 的 mosdns 补位。
 
-### 安装
+### 已烘焙，刷机即用
 
-mosdns 已烘焙进 full 固件（`CONFIG_PACKAGE_mosdns=y`），刷机即带，无需 `opkg`。
+mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`），全新刷机后
+自动运行，**无需任何手动配置**。仓库里就位的文件：
 
-但要注意：**装好后 ssr+ 的 DNS 模式仍然保持「本机 5335」（值 0）**。
-ssr+ 界面会多出「Use MosDNS query（值 4）」，**千万别选**——那是让 ssr+ 自己
-托管一个 mosdns 去 bind 5335，会跟 AGH 抢端口，正是要避免的情况。
+| 文件 | 作用 |
+|---|---|
+| `files/etc/mosdns/config.yaml` | v5.3.3 plugins-only 原生格式，监听 5353，定义国内/国外两条分流路径（已用官方 v5.3.3 二进制实跑验证通过） |
+| `files/etc/mosdns/cn.txt` | 国内域名名单（约 11 万条，源自 felixonmars/dnsmasq-china-list，每行一个域名） |
+| `files/etc/adguardhome.yaml` | AGH 烘焙配置：上游只有一行 `127.0.0.1:5353`（mosdns）、4MB 缓存、关乐观缓存 |
+| `files/etc/uci-defaults/99-dns-setup` | 首启脚本：dnsmasq 转发 `127.0.0.1#5335` + noresolv、AGH 置 enabled、重启 dnsmasq |
+
+> 为什么不用 geosite.dat：**mosdns v5.3.3 已经移除了 `data_providers`/`servers`
+> 顶层键，也不支持 geosite.dat 二进制**（源码里没有 load_dat 插件、没有 v2ray/geosite
+> 相关代码）。所以国内名单改用纯文本列表 cn.txt，由 `domain_set` 插件加载——零额外
+> 数据包依赖，比 geosite.dat 更可控。
+
+### 分流逻辑（config.yaml 干了什么）
+
+`files/etc/mosdns/config.yaml` 的实际分流：
+
+- **国内域名**（命中 cn.txt）→ `forward_local`：5 家上游并行取最快 ——
+  `223.5.5.5`、`119.29.29.29`、`114.114.114.114`（UDP）+ 阿里 DoH `https://dns.alidns.com/dns-query`
+  + DNSPod DoH `https://doh.pub/dns-query`
+- **国外域名**（未命中）→ 先走 `socks5 127.0.0.1:1080` 隧道查 `8.8.8.8`（防污染）；
+  隧道不可用时 `fallback` 直连 `8.8.8.8` / `1.1.1.1` 兜底（保 GitHub 等可直连站能解析）
+- **缓存**：mosdns 自带一层 cache（`size: 4096`），兜住 AGH 漏掉的查询
+
+> socks5 端口 `1080` 是 helloworld/ssr+ 的默认本地代理口，如你在 ssr+ 里改过就以界面为准。
 
 ### ssr+ 的 DNS 解析方式到底怎么选
 
 这是 AGH + mosdns + ssr+ 三者配合时最容易搞错的一步，单独说清。
 
-先记住一个原则：**ssr+ 的「DNS 解析方式」只决定「DNS 河由谁解析」，跟数据面的
+先记住一个原则：**ssr+ 的「DNS 解析方式」只决定「DNS 由谁解析」，跟数据面的
 国内外 IP 分流（防火墙 ssr-rules）是两条独立的线。** 本固件已经把 DNS 解析整条
 外包给了 AGH + mosdns，所以 ssr+ 这里**不需要再启动任何自己的 DNS 组件**。
+（对应字段 `pdnsd_enable` 默认值就是 0，即「本机 5335」，无需任何脚本干预。）
 
 在 ssr+ 界面「基本设置 → DNS 解析方式」下拉框里：
 
 | 选项（值） | 界面文字 | 做了什么 | 本固件该不该选 |
 |---|---|---|---|
-| **0** | 使用本机 5335 端口 DNS 服务 | 不启动任何进程，直接用 5335 上现成的服务（就是 AGH） | ✅ **选这个** |
+| **0** | 使用本机 5335 端口 DNS 服务 | 不启动任何进程，直接用 5335 上现成的服务（就是 AGH） | ✅ **选这个（默认）** |
 | 1 | 使用 DNS2TCP 查询 | 启动 dns2tcp/dns2socks 绑 5335 | ❌ 与 AGH 抢端口 |
 | 4 | 使用 MosDNS 查询 | 启动 ssr+ 自带的 mosdns 绑 5335 | ❌ 与 AGH 抢端口 |
 | 6 | 使用 ChinaDNS-NG 查询并缓存 | 启动 chinadns-ng 绑 5335 | ❌ 与 AGH 抢端口 |
@@ -629,28 +664,19 @@ ssr+ 界面会多出「Use MosDNS query（值 4）」，**千万别选**——�
 AdGuard Home 占着（dnsmasq 的 `server=127.0.0.1#5335` 指的就是它）。一旦选了，
 端口冲突，ssr+ 大概率起不来——这正是之前排查过的「5335 被占导致 ssr+ 挂」的场景。
 
-**选 0 的完整含义**：ssr+ 的 DNS 进程全部关掉，DNS 河交给
+**选 0 的完整含义**：ssr+ 的 DNS 进程全部关掉，DNS 交给
 `dnsmasq:53 → AGH:5335 → mosdns:5353` 这条外链。数据面的防火墙分流、出站代理、
 sniffing 跟这个下拉框无关，照常工作，翻墙不受影响。
 
 > 一句话：**DNS 解析方式选 0，其余全不选。** 这个下拉框的唯一作用就是"别让它
 > 碰 5335"，真正干活的是外面那条 AGH + mosdns 的链。
 
-### 配置（刷机后手动做一次）
+### 关于 web 前端
 
-mosdns 的 config.yaml 和 geosite 数据需要刷机后配置，启用步骤：
-
-1. 上传 geosite 域名数据到 `/etc/mosdns/`
-2. 编辑 `/etc/mosdns/config.yaml`（监听 5353、国内走 223.5.5.5、国外走 socks5 代理口）
-3. SSH 执行 `/etc/init.d/mosdns enable && /etc/init.d/mosdns start`
-
-> mosdns **没有 LuCI 网页前端**（官方 luci 源不收录 luci-app-mosdns），
-> 但它是「配置一次就长期不动」的后台组件，配置好之后日常完全不需要碰界面。
-> 社区第三方有 luci-app-mosdns 面板，但那是配合它自家模板方案用的，
-> 跟自定义 YAML 不兼容，不值得为此引入第三方源。
-
-> 具体 config.yaml 内容待定稿后补在这里。启用前先把 AGH 的 upstream 改成
-> `127.0.0.1:5353`（见第七章），否则 mosdns 起在中间也不生效。
+mosdns **没有 LuCI 网页前端**（官方 luci 源不收录 luci-app-mosdns），
+但它是「配置一次就长期不动」的后台组件——本次已把配置烘焙进固件，日常完全不需要碰。
+社区第三方有 luci-app-mosdns 面板，但那是配合它自家模板方案用的，
+跟自定义 YAML 不兼容，不值得为此引入第三方源。
 
 ---
 

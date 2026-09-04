@@ -1,0 +1,87 @@
+# mosdns v5.3.3 分流配置（plugins-only 原生格式，实测通过）
+#
+# DNS 链路：dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流
+#   - 国内域名（cn.txt 命中）→ forward_local（5 家国内 DNS 并行，取最快）
+#   - 国外域名（未命中）    → socks5 隧道查 8.8.8.8，隧道不可用时直连兜底
+#   - 广告过滤不在这里做，交给上游的 AdGuard Home
+#
+# 说明：v5.3.3 已移除 data_providers/servers 顶层键，也不支持 geosite.dat
+# 二进制文件；域名分流用 domain_set 加载纯文本列表（files/etc/mosdns/cn.txt，
+# 源自 felixonmars/dnsmasq-china-list，每行一个域名）。
+# 本配置已用官方 v5.3.3 Windows 二进制实跑验证：加载成功 + 国内外分流正确。
+
+log:
+  level: info
+  file: ''
+
+plugins:
+  # 1. 中国域名列表（纯文本，每行一个域名）
+  - tag: cn_domains
+    type: domain_set
+    args:
+      files: [/etc/mosdns/cn.txt]
+
+  # 2. 国内上游：5 家并行（3 UDP + 2 DoH），取最快应答
+  - tag: forward_local
+    type: forward
+    args:
+      upstreams:
+        - addr: 223.5.5.5
+        - addr: 119.29.29.29
+        - addr: 114.114.114.114
+        - addr: https://dns.alidns.com/dns-query
+        - addr: https://doh.pub/dns-query
+
+  # 3. 国外主路：走 ssr+ 的本地 socks5 隧道查 8.8.8.8（防污染）
+  #    端口 1080 是 helloworld/ssr+ 的默认 socks5 端口，以路由器界面实际为准
+  - tag: forward_via_tunnel
+    type: forward
+    args:
+      socks5: 127.0.0.1:1080
+      upstreams:
+        - addr: 8.8.8.8
+
+  # 4. 国外兜底：隧道不可用时直连境外公共 DNS（保 GitHub 等可直连站能解析）
+  - tag: forward_direct
+    type: forward
+    args:
+      upstreams:
+        - addr: 8.8.8.8
+        - addr: 1.1.1.1
+
+  # 5. 国外路径：先隧道、失败兜底直连
+  - tag: foreign_route
+    type: fallback
+    args:
+      primary: forward_via_tunnel
+      secondary: forward_direct
+      threshold: 500
+
+  # 6. 缓存（AGH 漏掉的查询在这里兜一层，减少对上游的重复请求）
+  - tag: cache
+    type: cache
+    args:
+      size: 4096
+
+  # 7. 主流程：缓存 → 国内/国外分流
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $cache
+      - matches: qname $cn_domains
+        exec: $forward_local
+      - matches: '!qname $cn_domains'
+        exec: $foreign_route
+
+  # 8. 监听 5353（AGH 的上游指向这里）
+  - tag: server_udp
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: 127.0.0.1:5353
+
+  - tag: server_tcp
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: 127.0.0.1:5353
