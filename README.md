@@ -130,6 +130,24 @@ ubiconcat1  0x2240000  93.25MB ┘
 | AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
 | ZeroTier     | `zerotier` + `luci-app-zerotier`       | **纯官方 packages / luci 源，不需要任何第三方源**。本体约 500KB，依赖 `kmod-tun`（TUN/TAP 虚拟网卡）                            |
 | vlmcsd (KMS) | `vlmcsd` + `luci-app-vlmcsd`           | **纯官方 packages / luci 源**。本体仅 23KB，用于局域网内 Windows / Office 的 KMS 激活                                  |
+| mosdns       | `mosdns`                              | **纯官方 packages 源**（`net/mosdns`，v5.3.3，Go 程序）。AGH 的下游分流器，见「十二·五」章                                  |
+
+### 5. 插件「只烘焙、不默认运行」的约定
+
+full 档位里这几个功能组件，遵循同一条原则：**编译进固件（刷机后前端可打开），但开机默认不启动**，等你真正要用时再手动启用。这样既不占内存、不抢端口，也避免一刷机就带着一堆没人用的服务在跑。
+
+| 组件 | 前端入口 | 默认状态 | 说明 |
+|---|---|---|---|
+| ssr+ | 服务 → ShadowSocksR Plus+ | 未启动 | 装好即带，但节点、模式都要你配置后才真正生效 |
+| AdGuard Home | 服务 → AdGuard Home | 未启用 | uci `adguardhome.config.enabled=0`，点「启用」才起服务 |
+| ZeroTier | VPN → ZeroTier | 未启用 | uci `zerotier.global.enabled=0`，填 Network ID 并勾启用才连 |
+| vlmcsd (KMS) | 服务 → vlmcsd | 未启用 | uci `vlmcsd.config.enabled=0`，勾启用才监听 1688 |
+| mosdns | 服务 → MosDNS | 未启用 | 装好即带，配置好 config.yaml 并启用后才监听 5353 |
+
+> 这几个包的「默认不运行」不是本仓库额外做的开关，而是**官方包自带的默认值就是 `enabled='0'`**
+> （已逐个核对 init 脚本：AGH 读 `adguardhome.config.enabled`、zerotier 读 `zerotier.global.enabled`、
+> vlmcsd 读 `vlmcsd.config.enabled`，均为 0）。所以「只烘焙、不默认运行」是现状的自然结果，
+> 无需额外脚本去关它。
 
 ### 4. 为什么选 ImmortalWrt 而不是 Lean 的 LEDE
 
@@ -400,7 +418,7 @@ MT7621 是 **mipsel** 架构，不少 Go/Rust 写的现代协议跑不了。逐�
 | `INCLUDE_Shadow_TLS`  | `depends on aarch64\|\|arm\|\|x86_64`                 |
 | `INCLUDE_NaiveProxy`  | `depends on !(arc\|\|armeb\|\|mips\|\|mips64\|\|...)` |
 | `INCLUDE_Kcptun`      | 依赖 `kcptun-client`，但 helloworld 源里**根本没有这个包**，开了必挂    |
-| `INCLUDE_MosDNS`      | 无硬限制，但 Go 编 mipsel 又慢又大，Xray 已能处理 DNS                 |
+| `INCLUDE_MosDNS`      | 这是 ssr+ **捆绑**的 MosDNS（会 bind 5335 与 AGH 抢端口），不开；分流用独立包 `mosdns`（见十二·五章），两者是不同东西     |
 
 ---
 
@@ -414,8 +432,14 @@ MT7621 是 **mipsel** 架构，不少 Go/Rust 写的现代协议跑不了。逐�
 | full    | `sysupgrade.bin` | 无（物理上限 121MB）       | 28.54MB ✅           |
 
 **minimal 和 full 的 factory.bin 都要盯着 32MB 限额。** full 首编 31.50MB，离上限只剩
-0.5MB 余量——将来往 full 档位加插件要留意，超了编译会直接在 check-size 挂掉。万一超了，
-按这个顺序砍：
+0.5MB 余量——将来往 full 档位加插件要留意，超了编译会直接在 check-size 挂掉。
+
+> mosdns 是 Go 程序，编译进 squashfs 约增 4-5MB，会让 full 的 factory.bin 逼近甚至
+> 超过 32MB 限额。**不过 full 档位不产出 factory.bin**（`diy-part2.sh` 已主动摘掉），
+> 只出 sysupgrade.bin（物理上限 121MB，很宽松），所以加 mosdns 对 full 无影响。
+> 受影响的是 **minimal**——它出 factory.bin，如果将来想往 minimal 也塞 mosdns 才需警惕。
+
+万一 factory 超了，按这个顺序砍：
 
 1. 注释掉 `config-minimal.config` 里的 `luci-theme-argon` + `luci-app-argon-config`（省 ~1.5MB）
 2. 注释掉 `htop`、`fdisk`、`badblocks`（省 ~1MB）
@@ -559,6 +583,40 @@ slmgr /ato
 
 `192.168.112.200` 是本固件的默认 LAN IP，网段改过就换成实际地址。  
 路由器是旁路由，客户端只要能 ping 通这个地址就行。
+
+---
+
+## 十二·五、mosdns 分流器（full 档位）
+
+### 它解决什么问题
+
+本固件的 DNS 链是：`dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流`。
+
+- AGH 负责**广告过滤 + 缓存**（占 5335，dnsmasq 上游指它）
+- mosdns 负责**按域名名单分流**：国内域名（geosite:cn）直连国内 DNS（如 223.5.5.5），
+  国外域名走代理隧道查 8.8.8.8，避免污染
+
+为什么需要 mosdns 而不是让 AGH 直接分流：**AGH 的 upstream 不支持 socks5**，
+它没法把查询送进梯子；而「国外域名在隧道内解析」必须由会走 socks5 的 mosdns 补位。
+
+### 安装
+
+mosdns 已烘焙进 full 固件（`CONFIG_PACKAGE_mosdns=y`），刷机即带，无需 `opkg`。
+
+但要注意：**装好后 ssr+ 的 DNS 模式仍然保持「本机 5335」（值 0）**。
+ssr+ 界面会多出「Use MosDNS query（值 4）」，**千万别选**——那是让 ssr+ 自己
+托管一个 mosdns 去 bind 5335，会跟 AGH 抢端口，正是要避免的情况。
+
+### 配置（刷机后手动做一次）
+
+mosdns 的 config.yaml 和 geosite 数据需要刷机后配置，启用步骤：
+
+1. 上传 geosite 域名数据到 `/etc/mosdns/`
+2. 编辑 `/etc/mosdns/config.yaml`（监听 5353、国内走 223.5.5.5、国外走 socks5 代理口）
+3. 服务 → MosDNS → 启用
+
+> 具体 config.yaml 内容待定稿后补在这里。启用前先把 AGH 的 upstream 改成
+> `127.0.0.1:5353`（见第七章），否则 mosdns 起在中间也不生效。
 
 ---
 
