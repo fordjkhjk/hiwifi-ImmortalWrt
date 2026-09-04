@@ -1,0 +1,21 @@
+# ksmbd（内核态 SMB3 文件共享）配置
+#
+# 由 luci-app-ksmbd 的 /etc/init.d/ksmbd 读取，编译时统一 enable。
+# share 段配合 automount（U 盘热插拔自动挂载）：全新刷机后插 U 盘即自动
+# 挂到 /mnt/sda1 并以访客可读写方式共享，无需进界面配置。
+# 换 U 盘后若设备名不是 sda1（如 sdb1），在 LuCI 网络共享页改一下路径即可。
+#
+# 2026-09-05 从实机验证配置固化。
+
+config globals
+	option workgroup 'WORKGROUP'
+	option description 'Ksmbd on OpenWrt'
+
+config share
+	option name 'sda1'
+	option path '/mnt/sda1'
+	option browseable 'yes'
+	option read_only 'no'
+	option guest_ok 'yes'
+	option create_mask '0666'
+	option dir_mask '0777'

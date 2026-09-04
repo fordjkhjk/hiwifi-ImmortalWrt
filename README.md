@@ -110,12 +110,12 @@ ubiconcat1  0x2240000  93.25MB ┘
 |                                        | 23.05（本项目实际形态）        | 24.10                |
 | -------------------------------------- | ------------------------------ | -------------------- |
 | 防火墙后端                                  | **firewall4 + nftables**（实测） | firewall4 + nftables |
-| 你的 `iptables -t nat -A POSTROUTING...` | 已改写为 nftables 烘焙进 `/etc/nftables.d/10-lan-masq.nft`，直接生效 | 同样按 nftables 写法 |
+| 你的 `iptables -t nat -A POSTROUTING...` | 已改由 `zz-hc5962-custom` 首启置 lan zone `masq='1'`，fw4 自动生成 fullcone NAT，直接生效 | 同样按 nftables 写法 |
 | ssr+ 支持                                | 成熟稳定                     | 透明代理/分流不完善           |
 
 > 注：早期这份配置想"显式切回 firewall3"，实测被 defconfig 静默推翻
 > （`CONFIG_PACKAGE_firewall=y` 被降级成 `=m`，fw4 照装），所以固件里实际
-> 就是 firewall4。自定义规则已全部改成 `/etc/nftables.d/*.nft` 写法。
+> 就是 firewall4。自定义 NAT 规则走 uci（lan zone masq），不写任何 nft 文件。
 
 结论：**23.05 更适配你的需求**。代价是 AdGuard Home 的 LuCI 界面在官方 23.05 feed 里没有，用社区包补（见下）。
 
@@ -138,16 +138,17 @@ full 档位里的功能组件分两类：**DNS 链（AGH + mosdns）默认运行
 
 | 组件 | 前端入口 | 默认状态 | 说明 |
 |---|---|---|---|
-| AdGuard Home | 服务 → AdGuard Home | **运行** | 烘焙配置 + 首启置 `adguardhome.config.enabled=1`，刷机即起，监听 5335，首次进 `:3000` 界面设账号密码即可 |
+| AdGuard Home | 服务 → AdGuard Home | **运行** | 烘焙配置（`/etc/AdGuardHome.yaml`，大写）+ 首启置 `AdGuardHome.AdGuardHome.enabled=1`，刷机即起，监听 5335，首次进 `:3000` 界面设账号密码即可 |
 | mosdns | **无 web 前端**（后台组件） | **运行** | 官方包 init 无开关，编译时统一 enable，随 `files/etc/mosdns/config.yaml` 起在 5353 |
 | ssr+ | 服务 → ShadowSocksR Plus+ | 未启动 | 装好即带，但节点、模式都要你配置后才真正生效（DNS 模式默认 0 = 本机 5335） |
 | ZeroTier | VPN → ZeroTier | 未启用 | uci `zerotier.global.enabled=0`，填 Network ID 并勾启用才连 |
 | vlmcsd (KMS) | 服务 → vlmcsd | 未启用 | uci `vlmcsd.config.enabled=0`，勾启用才监听 1688 |
 
-> **默认运行怎么实现的**：AGH 走 `files/etc/uci-defaults/99-dns-setup` 首启脚本把
-> `adguardhome.config.enabled` 置 1（官方包 init 本来默认 0）；mosdns 官方包 init 没有开关，
-> 固件编译时所有 `/etc/init.d/*` 会被统一 enable，所以刷机即起、读烘焙好的 config.yaml。
-> dnsmasq 也由同一脚本改成转发 `127.0.0.1#5335`（并 noresolv），整条
+> **默认运行怎么实现的**：AGH 走 `files/etc/uci-defaults/99-dns-setup` 首启脚本
+> 把 `AdGuardHome.AdGuardHome.enabled` 置 1（官方包 init 本来默认 0；注意 uci
+> 段名和 init 脚本名都是**大写 AdGuardHome**，小写版它们不读）；mosdns 官方包 init
+> 没有开关，固件编译时所有 `/etc/init.d/*` 会被统一 enable，所以刷机即起、读烘焙好的
+> config.yaml。dnsmasq 也由同一脚本改成转发 `127.0.0.1#5335`（并 noresolv），整条
 > `dnsmasq:53 → AGH:5335 → mosdns:5353` 链首启自动就位，无需手动做任何事。
 >
 > 其余三个「不默认运行」是**官方包自带默认值就是 `enabled='0'`**（zerotier 读
@@ -187,12 +188,12 @@ configs/config-minimal.config           # 档位 A：精简版 ~11MB，Breed 首
 configs/config-full.config               # 档位 B：完整版 factory 31.5MB / sysupgrade 28.5MB（首编实测）
 diy-part1.sh                            # feeds 兜底校验
 diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + full 档位摘除 factory.bin
-files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/旧防火墙残留清理/LuCI 检查更新按钮
+files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/lan zone masq/LuCI 检查更新按钮
 files/etc/uci-defaults/99-dns-setup    # 首启固化 DNS 链：dnsmasq 转发 5335 + 启用 AGH（见第五、七、十二·五章）
-files/etc/adguardhome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、4MB 缓存）
+files/etc/AdGuardHome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、4MB 缓存）
 files/etc/mosdns/config.yaml           # mosdns v5.3.3 分流配置（监听 5353，国内外分流，见十二·五章）
 files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dnsmasq-china-list 转换）
-files/etc/nftables.d/10-lan-masq.nft    # 旁路由 NAT 回程规则（fw4 自动 include，见第十一章）
+files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
@@ -206,7 +207,7 @@ package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系�
 - DNS `114.114.114.114`
 - `dhcp.lan.ignore=1` → 关闭 IPv4 DHCP
 - `ra=disabled` `dhcpv6=disabled` `ndp=disabled` + 停用 odhcpd → 关闭 IPv6
-- `/etc/nftables.d/10-lan-masq.nft` 写入 `oifname "br-lan" masquerade`（fw4 只认这个目录，iptables 写法已失效）
+- lan zone `masq='1'` → fw4 自动生成 fullcone srcnat，旁路由回程 NAT 直接生效（见第十一章）
 
 ---
 
@@ -345,7 +346,9 @@ block info        # 查看分区与文件系统
 df -h             # 查看挂载点
 ```
 
-`automount` 已内置，无需手动配置。SMB 共享在 **网络共享** 菜单里添加目录即可。
+`automount` 已内置，无需手动配置。SMB 共享也已烘焙（`files/etc/config/ksmbd`）：
+U 盘挂到 `/mnt/sda1` 后即以访客可读写方式自动共享，无需进界面配置；
+换盘后设备名若不是 sda1，到 **网络共享** 菜单改一下路径即可。
 
 > 若 U 盘是 NTFS 且需要写入，固件已内置 `kmod-fs-ntfs3`（内核态 NTFS 读写）。  
 > 极少数老 U 盘不识别，多半是 `kmod-usb-storage-uas` 的 UASP 兼容问题，拔插重试即可。
@@ -356,7 +359,7 @@ df -h             # 查看挂载点
 
 固件里 dnsmasq 已占用 53 端口，AdGuard Home 默认也要 53，二者会打架。
 
-> **full 档位全新刷机无需手动做**：`files/etc/adguardhome.yaml` 已把 AGH 端口烘焙为
+> **full 档位全新刷机无需手动做**：`files/etc/AdGuardHome.yaml` 已把 AGH 端口烘焙为
 > `5335`，`files/etc/uci-defaults/99-dns-setup` 首启自动把 dnsmasq 上游指向
 > `127.0.0.1#5335` 并 noresolv。下面这套手动步骤只作「理解原理 / 在旧固件上手动搭」的参考。
 
@@ -532,33 +535,26 @@ LuCI 的「网络 → 防火墙 → 常规设置」里那两个开关：
 
 ---
 
-## 十一、防火墙规则（fw4 + nftables 写法）
+## 十一、防火墙规则（fw4 + uci masq 写法）
 
-你要的那条旁路由回程规则，本体烘焙在 `files/etc/nftables.d/10-lan-masq.nft`：
+旁路由回程 NAT 的实现：`zz-hc5962-custom` 首启把 **lan zone 的 `masq` 置 1**，
+fw4 自动生成 fullcone srcnat，等效于当年手写的 `oifname "br-lan" masquerade`。
 
-```nft
-table ip nat {
-	chain lan_masq {
-		type nat hook postrouting priority 100; policy accept;
-		oifname "br-lan" masquerade
-	}
-}
-```
+**为什么不用手写 nft 文件**（2026-09-05 实机排障的教训）：曾在
+`/etc/nftables.d/` 放过 `table ip nat { chain ... masquerade }`，但 fw4 是把
+该目录的 `*.nft` include 进**自己的 `table inet fw4 { ... }` 内部**——table 里再
+声明 table = nft 语法错，导致**整个 fw4 ruleset 渲染失败**，防火墙裸奔（无 NAT、
+无转发规则，症状就是「网关指向旁路由 = 彻底上不了网」）。`/etc/nftables.d/`
+只能写规则片段，NAT 这种需求走 uci 的 zone masq 才是正道。
 
-**为什么不是原来的 iptables 写法**：ImmortalWrt 23.05 的默认防火墙是
-firewall4 + nftables，fw4 **不执行 `/etc/firewall.user`**（`fw4.uc` 里
-`fw4_compatible` 默认 false，script 型 include 从不加载），只认
-`/etc/nftables.d/*.nft`。旧固件里那条 iptables MASQUERADE 实际是**失效**的。
-
-`zz-hc5962-custom` 第 4 节现在只做旧残留清理：删掉 `/etc/firewall.user`、
-删掉 uci 里的 `firewall.user` include 段（防止从旧固件 sysupgrade 后
-把失效的 fw3 配置带过来）。
+> fw4 也**不执行 `/etc/firewall.user`**（`fw4_compatible` 默认 false），
+> 旧固件里那条 iptables MASQUERADE 实际是失效的——所以本仓库两处都不用。
 
 刷机后 SSH 到 192.168.112.200 验证：
 
 ```sh
-nft list chain ip nat lan_masq      # 应看到 oifname "br-lan" masquerade
-nft list ruleset | grep -n lan_masq # 确认规则真的进了当前 ruleset
+uci get firewall.@zone[0].masq        # 应输出 1
+nft list chain inet fw4 srcnat_lan    # 应看到 fullcone 规则
 ```
 
 ---
@@ -620,7 +616,7 @@ mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`�
 |---|---|
 | `files/etc/mosdns/config.yaml` | v5.3.3 plugins-only 原生格式，监听 5353，定义国内/国外两条分流路径（已用官方 v5.3.3 二进制实跑验证通过） |
 | `files/etc/mosdns/cn.txt` | 国内域名名单（约 11 万条，源自 felixonmars/dnsmasq-china-list，每行一个域名） |
-| `files/etc/adguardhome.yaml` | AGH 烘焙配置：上游只有一行 `127.0.0.1:5353`（mosdns）、4MB 缓存、关乐观缓存 |
+| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置：上游只有一行 `127.0.0.1:5353`（mosdns）、4MB 缓存、关乐观缓存 |
 | `files/etc/uci-defaults/99-dns-setup` | 首启脚本：dnsmasq 转发 `127.0.0.1#5335` + noresolv、AGH 置 enabled、重启 dnsmasq |
 
 > 为什么不用 geosite.dat：**mosdns v5.3.3 已经移除了 `data_providers`/`servers`
@@ -636,7 +632,8 @@ mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`�
   `223.5.5.5`、`119.29.29.29`、`114.114.114.114`（UDP）+ 阿里 DoH `https://dns.alidns.com/dns-query`
   + DNSPod DoH `https://doh.pub/dns-query`
 - **国外域名**（未命中）→ 先走 `socks5 127.0.0.1:1080` 隧道查 `8.8.8.8`（防污染）；
-  隧道不可用时 `fallback` 直连 `8.8.8.8` / `1.1.1.1` 兜底（保 GitHub 等可直连站能解析）
+  隧道不可用时 `fallback` 兜底：`114.114.114.114` 优先、`1.1.1.1` 次选
+  （境外 UDP 直连反正被污染，兜底拿境内可信结果保链路可用）
 - **缓存**：mosdns 自带一层 cache（`size: 4096`），兜住 AGH 漏掉的查询
 
 > socks5 端口 `1080` 是 helloworld/ssr+ 的默认本地代理口，如你在 ssr+ 里改过就以界面为准。
@@ -746,7 +743,7 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | 烘焙进固件的插件（ssr+、AdGuard Home、ZeroTier、vlmcsd 等） | ✅ 升级到新版本 |
 | LuCI 里的设置、无线密码、ssr+ 节点配置 | ✅ 保留 |
 | iStore / opkg 手动装的插件 | ❌ 清掉，需重装 |
-| `/etc/nftables.d/10-lan-masq.nft`（/rom 烘焙）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
+| 烘焙配置（AdGuardHome.yaml、mosdns、ksmbd、lan masq 等）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
 
 第一行就是「长期必用烘焙、偶尔尝鲜走 iStore」分层策略的落点。
 

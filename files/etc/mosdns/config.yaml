@@ -2,7 +2,7 @@
 #
 # DNS 链路：dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流
 #   - 国内域名（cn.txt 命中）→ forward_local（5 家国内 DNS 并行，取最快）
-#   - 国外域名（未命中）    → socks5 隧道查 8.8.8.8，隧道不可用时直连兜底
+#   - 国外域名（未命中）    → socks5 隧道查 8.8.8.8，隧道不可用时兜底（114 优先）
 #   - 广告过滤不在这里做，交给上游的 AdGuard Home
 #
 # 说明：v5.3.3 已移除 data_providers/servers 顶层键，也不支持 geosite.dat
@@ -41,12 +41,14 @@ plugins:
       upstreams:
         - addr: 8.8.8.8
 
-  # 4. 国外兜底：隧道不可用时直连境外公共 DNS（保 GitHub 等可直连站能解析）
+  # 4. 国外兜底：隧道不可用时的直连路径。
+  #    首选 114（境内可达、响应快）：境外 UDP 直连（8.8.8.8 等）反正被污染，
+  #    兜底拿到脏结果不如拿境内可信结果，保链路可用；1.1.1.1 留作次选。
   - tag: forward_direct
     type: forward
     args:
       upstreams:
-        - addr: 8.8.8.8
+        - addr: 114.114.114.114
         - addr: 1.1.1.1
 
   # 5. 国外路径：先隧道、失败兜底直连

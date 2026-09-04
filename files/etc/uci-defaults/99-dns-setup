@@ -21,12 +21,25 @@ set dhcp.@dnsmasq[0].noresolv='1'
 commit dhcp
 EOF
 
-# 2. AdGuard Home：启用（段名 config，官方包默认 enabled=0）
-uci -q set adguardhome.config.enabled='1'
-uci -q commit adguardhome
+# 2. AdGuard Home：写入标准 uci 配置并启用。
+#    注意大小写：init 脚本和 uci 都是 `AdGuardHome`（luci-app-adguardhome 的
+#    /etc/init.d/AdGuardHome 只读 /etc/config/AdGuardHome，小写版没人读）。
+#    官方包默认 enabled=0，须置 1。各字段对齐实机验证值：
+#    configpath 指向固件烘焙的 /etc/AdGuardHome.yaml（大写，同款原因）。
+uci -q batch <<'EOF'
+set AdGuardHome.AdGuardHome.enabled='1'
+set AdGuardHome.AdGuardHome.binpath='/usr/bin/AdGuardHome'
+set AdGuardHome.AdGuardHome.configpath='/etc/AdGuardHome.yaml'
+set AdGuardHome.AdGuardHome.workdir='/var/adguardhome'
+set AdGuardHome.AdGuardHome.httpport='3000'
+set AdGuardHome.AdGuardHome.redirect='none'
+set AdGuardHome.AdGuardHome.logfile='/tmp/AdGuardHome.log'
+set AdGuardHome.AdGuardHome.verbose='0'
+commit AdGuardHome
+EOF
 
-# 3. 让 dnsmasq 新配置生效，并登记 AGH 开机自启
+# 3. 让 dnsmasq 新配置生效，并登记 AGH 开机自启（init 名同为大写）
 /etc/init.d/dnsmasq restart 2>/dev/null
-/etc/init.d/adguardhome enable 2>/dev/null
+/etc/init.d/AdGuardHome enable 2>/dev/null
 
 exit 0

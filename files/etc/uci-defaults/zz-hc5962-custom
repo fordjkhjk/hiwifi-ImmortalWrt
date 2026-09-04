@@ -58,29 +58,28 @@ if [ -x /etc/init.d/odhcpd ]; then
 fi
 
 # ------------------------------------------------------------------
-# 4. 防火墙: 旁路由 NAT 回程（fw4 + nftables 写法）
+# 4. 防火墙: 旁路由 NAT 回程（lan zone 开 masq）
 #
-# 规则本体烘焙在 /rom 的 files/etc/nftables.d/10-lan-masq.nft：
-#     table ip nat { chain lan_masq { type nat hook postrouting
-#     priority 100; policy accept; oifname "br-lan" masquerade } }
-#
-# 为什么不用 /etc/firewall.user：ImmortalWrt 23.05 默认防火墙是 firewall4，
-# fw4 不执行 /etc/firewall.user（fw4_compatible 默认 false），只认
-# /etc/nftables.d/*.nft。旧固件里那条 iptables 规则实际是失效的。
-# 这里只做旧残留清理，防止从旧固件 sysupgrade 后把失效的 fw3 配置带过来。
+# 教训（2026-09-05 实机排障确认）：曾在 files/etc/nftables.d/ 放
+# `table ip nat { chain ... masquerade }`，但 fw4 是把 /etc/nftables.d/*.nft
+# include 进自己的 `table inet fw4 { ... }` 内部——table 里再声明 table
+# = nft 语法错，导致整个 fw4 ruleset 渲染失败（防火墙裸奔：无 NAT、无转发
+# 规则，「网关指向旁路由 = 上不了网」）。
+# 正确姿势：lan zone 置 masq=1，fw4 自动生成 fullcone srcnat，
+# 不需要任何手写 nft 文件。
 # ------------------------------------------------------------------
-# 删除旧 fw3 时代写入的 /etc/firewall.user（本脚本仅在首次开机 overlay 为空时
-# 执行，此时 /etc/firewall.user 只可能来自 /rom 烘焙，而我们从不烘焙它，安全）
+i=0
+while uci -q get firewall.@zone[$i] >/dev/null 2>&1; do
+    if [ "$(uci -q get firewall.@zone[$i].name)" = "lan" ]; then
+        uci set firewall.@zone[$i].masq='1'
+        uci commit firewall
+        break
+    fi
+    i=$((i+1))
+done
+
+# 清理旧 fw3 残留（fw4 不执行 firewall.user；防止旧固件 sysupgrade 带过来）
 rm -f /etc/firewall.user
-# 删除 uci 里指向它的 include 段（如有）
-if uci -q get firewall.user >/dev/null 2>&1; then
-    uci -q batch <<'EOF'
-delete firewall.user
-commit firewall
-EOF
-fi
-# 确保 nftables.d 目录存在（fw4 ruleset 会 include 这个目录下的 *.nft）
-mkdir -p /etc/nftables.d
 
 # ------------------------------------------------------------------
 # 5. 主机名与时区
