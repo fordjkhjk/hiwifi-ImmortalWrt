@@ -142,7 +142,7 @@ full 档位里这几个功能组件，遵循同一条原则：**编译进固件�
 | AdGuard Home | 服务 → AdGuard Home | 未启用 | uci `adguardhome.config.enabled=0`，点「启用」才起服务 |
 | ZeroTier | VPN → ZeroTier | 未启用 | uci `zerotier.global.enabled=0`，填 Network ID 并勾启用才连 |
 | vlmcsd (KMS) | 服务 → vlmcsd | 未启用 | uci `vlmcsd.config.enabled=0`，勾启用才监听 1688 |
-| mosdns | 服务 → MosDNS | 未启用 | 装好即带，配置好 config.yaml 并启用后才监听 5353 |
+| mosdns | **无 web 前端**（后台组件） | 已装、未启动 | 官方 luci 源没有 luci-app-mosdns（23.05/24.10 均无），配置走 SSH：传文件到 `/etc/mosdns/` 后 `/etc/init.d/mosdns enable && start` |
 
 > 这几个包的「默认不运行」不是本仓库额外做的开关，而是**官方包自带的默认值就是 `enabled='0'`**
 > （已逐个核对 init 脚本：AGH 读 `adguardhome.config.enabled`、zerotier 读 `zerotier.global.enabled`、
@@ -642,7 +642,12 @@ mosdns 的 config.yaml 和 geosite 数据需要刷机后配置，启用步骤：
 
 1. 上传 geosite 域名数据到 `/etc/mosdns/`
 2. 编辑 `/etc/mosdns/config.yaml`（监听 5353、国内走 223.5.5.5、国外走 socks5 代理口）
-3. 服务 → MosDNS → 启用
+3. SSH 执行 `/etc/init.d/mosdns enable && /etc/init.d/mosdns start`
+
+> mosdns **没有 LuCI 网页前端**（官方 luci 源不收录 luci-app-mosdns），
+> 但它是「配置一次就长期不动」的后台组件，配置好之后日常完全不需要碰界面。
+> 社区第三方有 luci-app-mosdns 面板，但那是配合它自家模板方案用的，
+> 跟自定义 YAML 不兼容，不值得为此引入第三方源。
 
 > 具体 config.yaml 内容待定稿后补在这里。启用前先把 AGH 的 upstream 改成
 > `127.0.0.1:5353`（见第七章），否则 mosdns 起在中间也不生效。
