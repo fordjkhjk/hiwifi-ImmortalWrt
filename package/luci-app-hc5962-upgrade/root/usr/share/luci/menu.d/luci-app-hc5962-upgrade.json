@@ -4,7 +4,7 @@
 		"order": 65,
 		"action": {
 			"type": "view",
-			"path": "hc5962-upgrade/upgrade"
+			"path": "hc5962-upgrade/upgrade3"
 		},
 		"depends": {
 			"acl": [ "luci-app-hc5962-upgrade" ]

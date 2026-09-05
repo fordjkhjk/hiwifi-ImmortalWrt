@@ -181,7 +181,7 @@ return view.extend({
 		return E('div', { class: 'cbi-map' }, [
 			E('h2', '固件升级'),
 			E('p', { class: 'cbi-map-descr' },
-				'检查 GitHub 仓库是否有新版本固件，并在线刷入。升级前请确认路由器供电稳定；整个过程约 3-5 分钟。'),
+				'检查 GitHub 仓库是否有新版本固件，并在线刷入。升级前请确认路由器供电稳定；整个过程约 3-5 分钟。（升级工具 v3 · 2026-09-05）'),
 			self.statusCardHost,
 			E('div', { class: 'right', style: 'margin:8px 0' }, [
 				E('button', {
