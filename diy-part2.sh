@@ -50,6 +50,24 @@ else
 fi
 
 # ------------------------------------------------------------------
+# 修复 ssr+ (helloworld feed) subscribe.lua 的 serviceName 丢失 bug
+#
+# 症状：trojan/vless 分享链接的 URL 参数键名被 string.lower() 转成小写存储
+#       （servicename），但取值用驼峰 params.serviceName → 永远取到 nil。
+#       订阅里所有 gRPC 节点的 serviceName 全部丢失 → 服务器拒绝 gRPC 握手
+#       → 节点连不通（xray 正常启动但报 connection reset）。
+# 修法：兜底 params.servicename（小写键），再兜底 params.path（gRFC 规范里
+#       gRPC 的 path 参数与 serviceName 同义）。
+#
+SUB="package/feeds/helloworld/luci-app-ssr-plus/root/usr/share/shadowsocksr/subscribe.lua"
+if [ -f "$SUB" ] && grep -q 'result.serviceName = params.serviceName$' "$SUB"; then
+    sed -i 's/result.serviceName = params.serviceName$/result.serviceName = params.serviceName or params.servicename or params.path/' "$SUB"
+    echo ">> [diy-part2] 已修复 ssr+ subscribe.lua 的 serviceName 丢失 bug（大小写键名兜底）"
+else
+    echo "!! [diy-part2] 未找到 $SUB 或已无目标行，跳过 subscribe.lua bug 修复"
+fi
+
+# ------------------------------------------------------------------
 # 体积限制：只卡 factory，不卡 sysupgrade
 #
 # mt7621.mk 里 HC5962 的定义：
