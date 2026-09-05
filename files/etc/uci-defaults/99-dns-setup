@@ -42,4 +42,12 @@ EOF
 /etc/init.d/dnsmasq restart 2>/dev/null
 /etc/init.d/AdGuardHome enable 2>/dev/null
 
+# 4. 路由器本机 DNS 指向本机链（2026-09-05 实机验证）。
+#    路由器自己的进程（ssr+ 网页谷歌检查 /usr/bin/ssr-check、opkg 等）
+#    默认用上游/ISP DNS，被污染后拿到假 IP → 谷歌检查永远误报「连接错误」。
+#    改问 127.0.0.1 即与客户端走同一条 dnsmasq→AGH→mosdns 链。
+#    只影响路由器本机工具，不影响电脑手机（它们直接问 dnsmasq:53）。
+uci set network.lan.dns='127.0.0.1'
+uci commit network
+
 exit 0
