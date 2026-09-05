@@ -15,9 +15,6 @@ cat feeds.conf.default
 grep -q "helloworld" feeds.conf.default || \
   echo 'src-git helloworld https://github.com/fw876/helloworld;master' >> feeds.conf.default
 
-grep -q "istore" feeds.conf.default || \
-  echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
-
 # luci-app-adguardhome（AdGuard Home 的 LuCI 管理页，社区版）
 # 这个仓库的 Makefile 在仓库根目录，是标准的「package 目录布局」——必须直接
 # 放进源码树的 package/ 下让编译器看到，不能注册成 feed（feed 扫描只认子

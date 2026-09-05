@@ -10,36 +10,18 @@
  *
  * 页面: 系统 → 固件升级
  * 流程: 显示当前/最新版本 → 检查更新 → 输入确认词 upgrade → 一键刷入
- * 后端: 复用固件内置脚本 fw-check-update --json / fw-upgrade -y
+ * 后端: 专用 rpcd 脚本 /usr/libexec/rpcd/hc5962-upgrade（check/log/start）
+ *       不用 file.exec —— 它有命令白名单，非预登记命令会被权限拒绝
  * 安全: 升级必须输入确认词；升级中按钮置灰并轮询日志。
  */
 
-const exec = rpc.declare({
-	object: 'file',
-	method: 'exec',
-	params: ['command', 'params'],
-	expect: { code: 0, stdout: '', stderr: '' }
-});
+const checkRpc = rpc.declare({ object: 'hc5962-upgrade', method: 'check' });
+const logRpc   = rpc.declare({ object: 'hc5962-upgrade', method: 'log' });
+const startRpc = rpc.declare({ object: 'hc5962-upgrade', method: 'start' });
 
 return view.extend({
 	upgrading: false,
 	pollFn: null,
-
-	/* rpcd 的 file.exec 不走 shell、不搜 PATH，统一用 /bin/sh -c 包一层 */
-	runCmd: function(cmd) {
-		return L.resolveDefault(exec('/bin/sh', ['-c', cmd]),
-			{ code: -1, stdout: '', stderr: '命令执行失败' });
-	},
-
-	parseInfo: function(res) {
-		try {
-			var o = JSON.parse(res.stdout || '{}');
-			return (o && typeof o === 'object') ? o : {};
-		}
-		catch (e) {
-			return {};
-		}
-	},
 
 	badge: function(text, cls) {
 		return E('span', { class: 'cbi-button ' + (cls || '') }, text);
@@ -48,7 +30,10 @@ return view.extend({
 	buildStatusCard: function(info) {
 		var badge;
 
-		if (info.error) {
+		if (!info || Object.keys(info).length === 0) {
+			badge = this.badge('后端调用失败（检查浏览器控制台或 SSH 跑 fw-check-update）', 'cbi-button-negative');
+		}
+		else if (info.error) {
 			badge = this.badge(info.error, 'cbi-button-negative');
 		}
 		else if (info.current && info.latest) {
@@ -65,15 +50,15 @@ return view.extend({
 				E('div', { class: 'table' }, [
 					E('div', { class: 'tr' }, [
 						E('div', { class: 'td left', width: '30%' }, '当前版本'),
-						E('div', { class: 'td left' }, info.current || '未知')
+						E('div', { class: 'td left' }, (info && info.current) || '未知')
 					]),
 					E('div', { class: 'tr' }, [
 						E('div', { class: 'td left', width: '30%' }, '最新版本'),
-						E('div', { class: 'td left' }, info.latest || '—')
+						E('div', { class: 'td left' }, (info && info.latest) || '—')
 					]),
 					E('div', { class: 'tr' }, [
 						E('div', { class: 'td left', width: '30%' }, '发布日期'),
-						E('div', { class: 'td left' }, info.published || '—')
+						E('div', { class: 'td left' }, (info && info.published) || '—')
 					]),
 					E('div', { class: 'tr' }, [
 						E('div', { class: 'td left', width: '30%' }, '状态'),
@@ -115,8 +100,7 @@ return view.extend({
 
 	checkUpdate: function() {
 		var self = this;
-		return self.runCmd('fw-check-update --json').then(function(res) {
-			var info = self.parseInfo(res);
+		return L.resolveDefault(checkRpc(), {}).then(function(info) {
 			dom.content(self.statusCardHost, self.buildStatusCard(info));
 			dom.content(self.upgradeSectionHost, self.buildUpgradeSection(info));
 		});
@@ -133,7 +117,7 @@ return view.extend({
 		self.upgrading = true;
 		dom.content(self.upgradeSectionHost, self.buildUpgradeSection(null));
 
-		return self.runCmd('nohup fw-upgrade -y >/tmp/fw-upgrade.log 2>&1 &').then(function() {
+		return L.resolveDefault(startRpc(), {}).then(function() {
 			self.pollFn = L.bind(self.pollLog, self);
 			poll.add(self.pollFn, 2);
 			poll.start();
@@ -143,43 +127,39 @@ return view.extend({
 	pollLog: function() {
 		var self = this;
 
-		self.runCmd('cat /tmp/fw-upgrade.log 2>/dev/null').then(function(res) {
+		return L.resolveDefault(logRpc(), {}).then(function(res) {
 			if (self.logArea) {
-				self.logArea.textContent = res.stdout || '(暂无日志)';
+				self.logArea.textContent = (res && res.log) || '(暂无日志)';
 				self.logArea.scrollTop = self.logArea.scrollHeight;
 			}
-		});
 
-		return self.runCmd('pgrep -f "^fw-upgrade -y" >/dev/null 2>&1 && echo RUNNING || echo DONE').then(function(res) {
-			if (res.stdout.indexOf('RUNNING') >= 0)
+			if (res && res.running)
 				return;
 
 			poll.remove(self.pollFn);
 			self.upgrading = false;
 
-			return self.runCmd('tail -n 4 /tmp/fw-upgrade.log 2>/dev/null').then(function(r) {
-				var flashing = (r.stdout.indexOf('[6/6]') >= 0);
-				dom.content(self.upgradeSectionHost, E('div', {}, [
-					E('p', { class: flashing ? 'cbi-button cbi-button-positive important' : 'cbi-button cbi-button-negative' },
-						flashing ? '刷机已启动，路由器正在重启。2-3 分钟后请重新打开本页面，应显示新版本。' :
-						'升级流程已结束，请查看上方日志确认结果（若有错误即为失败）。')
-				]));
-			});
+			var log = (res && res.log) || '';
+			var flashing = (log.indexOf('[6/6]') >= 0);
+			dom.content(self.upgradeSectionHost, E('div', {}, [
+				E('p', { class: flashing ? 'cbi-button cbi-button-positive important' : 'cbi-button cbi-button-negative' },
+					flashing ? '刷机已启动，路由器正在重启。2-3 分钟后请重新打开本页面，应显示新版本。' :
+					'升级流程已结束，请查看上方日志确认结果（若有错误即为失败）。')
+			]));
 		});
 	},
 
 	load: function() {
-		var self = this;
 		return Promise.all([
-			self.runCmd('fw-check-update --json'),
-			self.runCmd('pgrep -f "^fw-upgrade -y" >/dev/null 2>&1 && echo RUNNING || echo DONE')
+			L.resolveDefault(checkRpc(), {}),
+			L.resolveDefault(logRpc(), { running: false, log: '' })
 		]);
 	},
 
 	render: function(data) {
 		var self = this;
-		var info = self.parseInfo(data[0]);
-		var running = (data[1].stdout || '').indexOf('RUNNING') >= 0;
+		var info = data[0] || {};
+		var running = !!(data[1] && data[1].running);
 
 		self.kwInput = E('input', { type: 'text', id: 'hc5962-kw', placeholder: 'upgrade', style: 'width:8em' });
 		self.logArea = E('pre', { style: 'max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#111;color:#4ade80;padding:8px;border-radius:4px;font-size:12px;' });

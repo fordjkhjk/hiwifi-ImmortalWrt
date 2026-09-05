@@ -125,7 +125,6 @@ ubiconcat1  0x2240000  93.25MB ┘
 | ------------ | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | SMB          | `luci-app-ksmbd`                       | ImmortalWrt 官方 luci feed。ksmbd 是内核态 SMB3，约 300KB；samba4 约 8-10MB，为控体积选 ksmbd                         |
 | U盘自动挂载       | `automount`                            | ImmortalWrt 官方 `package/emortal/automount`，热插拔自动挂载并写 fstab                                           |
-| iStore 商店    | `luci-app-store`                       | `src-git istore https://github.com/linkease/istore;main`（官方 README 写法）                               |
 | ssr+         | `luci-app-ssr-plus`                    | **ImmortalWrt 任何官方源都没有**，用上游 `fw876/helloworld`                                                      |
 | AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
 | ZeroTier     | `zerotier` + `luci-app-zerotier`       | **纯官方 packages / luci 源，不需要任何第三方源**。本体约 500KB，依赖 `kmod-tun`（TUN/TAP 虚拟网卡）                            |
@@ -183,7 +182,7 @@ full 档位里的功能组件分两类：**DNS 链（AGH + mosdns）默认运行
 ```
 .github/workflows/openwrt-builder.yml   # 构建流程，档位可选 minimal / full / both；含季度定时
 .github/workflows/keepalive.yml          # 每月自动提交一次，防止定时任务被 60 天规则禁用
-feeds.conf.default                      # 4 个官方源 + helloworld + istore（AGH 界面不走 feed，见 diy-part1.sh）
+feeds.conf.default                      # 4 个官方源 + helloworld（AGH 界面不走 feed，见 diy-part1.sh）
 configs/config-minimal.config           # 档位 A：精简版 ~11MB，Breed 首刷（出 factory+sysupgrade）
 configs/config-full.config               # 档位 B：完整版 factory 31.5MB / sysupgrade 28.5MB（首编实测）
 diy-part1.sh                            # feeds 兜底校验
@@ -753,10 +752,10 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 |---|---|
 | 烘焙进固件的插件（ssr+、AdGuard Home、ZeroTier、vlmcsd 等） | ✅ 升级到新版本 |
 | LuCI 里的设置、无线密码、ssr+ 节点配置 | ✅ 保留 |
-| iStore / opkg 手动装的插件 | ❌ 清掉，需重装 |
+| iStore / opkg 手动装的插件 | ❌ 清掉，需重装（2026-09 起固件已不带 iStore：官方源砍了 mipsel_24kc 架构 feed，iStore 在本机装不了任何插件，纯占体积） |
 | 烘焙配置（AdGuardHome.yaml、mosdns、ksmbd、lan masq 等）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
 
-第一行就是「长期必用烘焙、偶尔尝鲜走 iStore」分层策略的落点。
+「长期必用烘焙、偶尔尝鲜走 opkg」分层策略的落点。
 
 ---
 

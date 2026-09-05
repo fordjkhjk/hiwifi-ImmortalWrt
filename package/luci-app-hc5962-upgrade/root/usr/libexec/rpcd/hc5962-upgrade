@@ -1,0 +1,37 @@
+#!/bin/sh
+# hc5962-upgrade — LuCI 网页升级页专用 rpcd 后端
+#
+# 为什么不用 file.exec 直接跑命令：新版 LuCI 的 file.exec 除了 ubus ACL
+# 之外还有命令白名单（acls.file），只放行 /bin/dmesg -r 之类预登记命令，
+# 动态命令一律 PERMISSION_DENIED。专用后端是各 LuCI 插件的标准做法。
+#
+# 方法（均无参数，网页端 rpc.declare 直接调）：
+#   check  → 转发 fw-check-update --json 的输出（只读）
+#   log    → { running: bool, log: "升级日志全文" }
+#   start  → 后台启动 fw-upgrade -y，返回 { ok: true }
+
+case "$1" in
+	list)
+		echo '{ "check": {}, "log": {}, "start": {} }'
+		;;
+	call)
+		case "$2" in
+			check)
+				/usr/bin/fw-check-update --json 2>/dev/null
+				;;
+			start)
+				nohup /usr/bin/fw-upgrade -y >/tmp/fw-upgrade.log 2>&1 &
+				echo '{ "ok": true }'
+				;;
+			log)
+				if pgrep -f '^fw-upgrade -y' >/dev/null 2>&1; then
+					R=true
+				else
+					R=false
+				fi
+				L="$(cat /tmp/fw-upgrade.log 2>/dev/null | jq -Rs . 2>/dev/null || echo '""')"
+				echo "{ \"running\": $R, \"log\": $L }"
+				;;
+		esac
+		;;
+esac

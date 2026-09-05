@@ -1,16 +1,14 @@
 {
 	"luci-app-hc5962-upgrade": {
-		"description": "Grant command execution for LuCI app hc5962-upgrade",
+		"description": "Grant access to hc5962-upgrade rpcd backend",
 		"read": {
 			"ubus": {
-				"luci.sys": [ "exec" ],
-				"file": [ "exec" ]
+				"hc5962-upgrade": [ "check", "log" ]
 			}
 		},
 		"write": {
 			"ubus": {
-				"luci.sys": [ "exec" ],
-				"file": [ "exec" ]
+				"hc5962-upgrade": [ "start" ]
 			}
 		}
 	}

@@ -1,0 +1,4 @@
+# 本仓库是固件源码，全部供 Linux（OpenWrt buildroot / 路由器）消费。
+# 禁止 git 在 Windows 上检出时把换行转成 CRLF——CRLF 的 sh 脚本
+# 在路由器上会直接语法错误（实测踩坑）。
+* text eol=lf
