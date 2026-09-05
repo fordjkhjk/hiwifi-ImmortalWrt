@@ -33,6 +33,23 @@ echo ">> [diy-part2] uci-defaults 权限:"
 ls -l files/etc/uci-defaults/ 2>/dev/null || true
 
 # ------------------------------------------------------------------
+# 修复 ssr+ (helloworld feed) gen_config.lua 的 gRPC 空表 bug
+#
+# 症状：订阅节点为 trojan/vmess + grpc 传输、且 serviceName 字段缺失时，
+#       grpcSettings 表所有键都是 nil → luci.jsonc 把空 Lua 表编码成 []（数组），
+#       新版 xray 拒收数组直接退出 → ssr+ 显示「未运行」。
+# 修法：serviceName 兜底为空字符串 ""，表非空即编码为 {}（对象），xray 可正常启动。
+# 参考：实机定位于 2026-09-05，上游 fw876/helloworld master 同样存在此行。
+# ------------------------------------------------------------------
+GEN="package/feeds/helloworld/luci-app-ssr-plus/root/usr/share/shadowsocksr/gen_config.lua"
+if [ -f "$GEN" ] && grep -q 'and server.serviceName or nil,' "$GEN"; then
+    sed -i 's/and server.serviceName or nil,/and server.serviceName or "",/' "$GEN"
+    echo ">> [diy-part2] 已修复 ssr+ gen_config.lua 的 gRPC 空表 bug（serviceName 兜底空串）"
+else
+    echo "!! [diy-part2] 未找到 $GEN 或已无目标行，跳过 gRPC bug 修复"
+fi
+
+# ------------------------------------------------------------------
 # 体积限制：只卡 factory，不卡 sysupgrade
 #
 # mt7621.mk 里 HC5962 的定义：
