@@ -41,16 +41,19 @@ LOCAL="$(cat "$VER_FILE" 2>/dev/null)"
 # ---- 查询 GitHub ----------------------------------------------------------
 JSON="$(curl -sf --max-time 30 -H 'Accept: application/vnd.github+json' "$API")"
 if [ -z "$JSON" ]; then
-    [ "$MODE" = "json" ] && echo '{"error":"访问 GitHub 失败（网络不通或超出限额）"}'
-    echo "错误: 访问 GitHub API 失败（网络不通或超出限额）。"
-    echo "如果路由器时间不准会导致 HTTPS 握手失败，请先校时: date"
+    if [ "$MODE" = "json" ]; then
+        echo '{"error":"访问 GitHub 失败（网络不通或超出限额）"}'
+    else
+        echo "错误: 访问 GitHub API 失败（网络不通或超出限额）。"
+        echo "如果路由器时间不准会导致 HTTPS 握手失败，请先校时: date"
+    fi
     exit 1
 fi
 
 TAG="$(echo "$JSON" | jq -r '.tag_name')"
 PUBLISHED="$(echo "$JSON" | jq -r '.published_at' | cut -c1-10)"
-ASSET_NAME="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .name' | head -n1)"
-ASSET_SIZE="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .size' | head -n1)"
+ASSET_NAME="$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith("sysupgrade.bin")) | .name' | head -n1)"
+ASSET_SIZE="$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith("sysupgrade.bin")) | .size' | head -n1)"
 
 if [ -z "$ASSET_NAME" ]; then
     [ "$MODE" = "json" ] && echo '{"error":"最新 Release 里找不到 sysupgrade 固件"}'

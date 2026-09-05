@@ -46,9 +46,9 @@ JSON="$(curl -sf --max-time 30 -H 'Accept: application/vnd.github+json' "$API")"
 [ -n "$JSON" ] || { echo "错误: 访问 GitHub API 失败。"; exit 1; }
 
 TAG="$(echo "$JSON" | jq -r '.tag_name')"
-BIN_URL="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .browser_download_url' | head -n1)"
-BIN_NAME="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .name' | head -n1)"
-BIN_SIZE="$(echo "$JSON" | jq -r '.assets[] | select(.name | test("sysupgrade\\.bin$")) | .size' | head -n1)"
+BIN_URL="$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith("sysupgrade.bin")) | .browser_download_url' | head -n1)"
+BIN_NAME="$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith("sysupgrade.bin")) | .name' | head -n1)"
+BIN_SIZE="$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith("sysupgrade.bin")) | .size' | head -n1)"
 SUM_URL="$(echo "$JSON" | jq -r '.assets[] | select(.name == "sha256sums") | .browser_download_url' | head -n1)"
 LOCAL="$(cat "$VER_FILE" 2>/dev/null)"
 
