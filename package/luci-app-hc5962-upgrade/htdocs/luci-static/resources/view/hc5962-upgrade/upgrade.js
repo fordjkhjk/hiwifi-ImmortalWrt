@@ -15,9 +15,9 @@
  */
 
 const exec = rpc.declare({
-	object: 'luci.sys',
+	object: 'file',
 	method: 'exec',
-	params: ['command'],
+	params: ['command', 'params'],
 	expect: { code: 0, stdout: '', stderr: '' }
 });
 
@@ -25,8 +25,10 @@ return view.extend({
 	upgrading: false,
 	pollFn: null,
 
+	/* rpcd 的 file.exec 不走 shell、不搜 PATH，统一用 /bin/sh -c 包一层 */
 	runCmd: function(cmd) {
-		return L.resolveDefault(exec(cmd), { code: -1, stdout: '', stderr: '命令执行失败' });
+		return L.resolveDefault(exec('/bin/sh', ['-c', cmd]),
+			{ code: -1, stdout: '', stderr: '命令执行失败' });
 	},
 
 	parseInfo: function(res) {

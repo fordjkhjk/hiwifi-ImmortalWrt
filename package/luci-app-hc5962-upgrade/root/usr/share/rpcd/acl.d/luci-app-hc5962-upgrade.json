@@ -3,12 +3,14 @@
 		"description": "Grant command execution for LuCI app hc5962-upgrade",
 		"read": {
 			"ubus": {
-				"luci.sys": [ "exec" ]
+				"luci.sys": [ "exec" ],
+				"file": [ "exec" ]
 			}
 		},
 		"write": {
 			"ubus": {
-				"luci.sys": [ "exec" ]
+				"luci.sys": [ "exec" ],
+				"file": [ "exec" ]
 			}
 		}
 	}
