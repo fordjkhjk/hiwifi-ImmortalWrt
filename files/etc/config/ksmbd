@@ -5,11 +5,19 @@
 # 挂到 /mnt/sda1 并以访客可读写方式共享，无需进界面配置。
 # 换 U 盘后若设备名不是 sda1（如 sdb1），在 LuCI 网络共享页改一下路径即可。
 #
+# interface 列表 = lan + zerotier：让 samba 同时监听 LAN 和 ZeroTier
+# 虚拟网卡，外网 ZT 设备才能访问共享（2026-09-05 实机排障确认：默认只绑
+# br-lan，ZT 访问 445 直接 Connection refused）。
+# 依赖：network 里要有名为 zerotier 的接口段（zz-hc5962-custom 第 8 节
+# 创建，device 与网络 ID 绑定；若换了 ZT 网络 ID，需同步改两处 device 名），
+# 配套 hotplug 脚本 etc/hotplug.d/net/60-ksmbd-zerotier 解决开机时序。
+#
 # 2026-09-05 从实机验证配置固化。
 
 config globals
 	option workgroup 'WORKGROUP'
 	option description 'Ksmbd on OpenWrt'
+	option interface 'lan zerotier'
 
 config share
 	option name 'sda1'

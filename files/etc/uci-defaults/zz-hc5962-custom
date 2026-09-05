@@ -117,4 +117,27 @@ commit luci
 EOF
 fi
 
+# ------------------------------------------------------------------
+# 8. ZeroTier 虚拟网卡登记（配合 ksmbd 接口绑定）
+#
+# 背景（2026-09-05 实机排障）：ksmbd init 只认 uci network 里登记过的
+# 接口段来解析设备名。这里创建一个 proto=none（unmanaged）的接口段，
+# 仅用于把名字 zerotier 映射到 ZT 虚拟网卡 ztuze4o5om——netifd 不参与
+# 寻址，地址仍由 zerotier 自己管理。
+#
+# 注意：zt 网卡名由「网络 ID」派生（当前 ID 9f77fc393e3b4cf2 →
+# ztuze4o5om）。若以后在 LuCI 里换了网络 ID，网卡名会变，需同步改
+# 这里和 files/etc/config/ksmbd 里的引用（改完 /etc/init.d/ksmbd restart）。
+# ZT 未配置/未入网时本段无副作用；配合 etc/hotplug.d/net/60-ksmbd-zerotier
+# 解决 ksmbd 先于 zerotier 启动的时序问题。
+# ------------------------------------------------------------------
+if [ -x /etc/init.d/zerotier ] && ! uci -q get network.zerotier >/dev/null 2>&1; then
+    uci -q batch <<'EOF'
+set network.zerotier=interface
+set network.zerotier.proto='none'
+set network.zerotier.device='ztuze4o5om'
+commit network
+EOF
+fi
+
 exit 0

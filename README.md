@@ -193,7 +193,8 @@ files/etc/uci-defaults/99-dns-setup    # 首启固化 DNS 链：dnsmasq 转发 5
 files/etc/AdGuardHome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、4MB 缓存）
 files/etc/mosdns/config.yaml           # mosdns v5.3.3 分流配置（监听 5353，国内外分流，见十二·五章）
 files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dnsmasq-china-list 转换）
-files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享）
+files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
+files/etc/hotplug.d/net/60-ksmbd-zerotier  # ZT 网卡出现时重启 ksmbd（补绑 zt 接口，解决开机时序）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
@@ -349,6 +350,16 @@ df -h             # 查看挂载点
 `automount` 已内置，无需手动配置。SMB 共享也已烘焙（`files/etc/config/ksmbd`）：
 U 盘挂到 `/mnt/sda1` 后即以访客可读写方式自动共享，无需进界面配置；
 换盘后设备名若不是 sda1，到 **网络共享** 菜单改一下路径即可。
+
+samba 同时监听 LAN 和 ZeroTier 虚拟网卡（`option interface 'lan zerotier'`），
+外网 ZT 设备可直接访问 `\\192.168.196.x`（路由器的 ZT IP）读写共享。
+两点说明：
+
+- ksmbd 开机启动早于 zerotier 入网，靠 `files/etc/hotplug.d/net/60-ksmbd-zerotier`
+  在 ZT 网卡出现时自动重启 ksmbd 补绑，无需人工干预
+- ZT 网卡名（`ztuze4o5om`）由网络 ID 派生（当前 ID `9f77fc393e3b4cf2`）。
+  若换了网络 ID，需同步改 `files/etc/uci-defaults/zz-hc5962-custom` 第 8 节
+  和 ksmbd 配置里的 device 名
 
 > 若 U 盘是 NTFS 且需要写入，固件已内置 `kmod-fs-ntfs3`（内核态 NTFS 读写）。  
 > 极少数老 U 盘不识别，多半是 `kmod-usb-storage-uas` 的 UASP 兼容问题，拔插重试即可。

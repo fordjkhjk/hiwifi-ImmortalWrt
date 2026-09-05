@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# ZeroTier 虚拟网卡出现时重启 ksmbd，让 samba 补绑 zt 接口
+#
+# 背景（2026-09-05 实机排障）：ksmbd init 按 uci ksmbd.@globals[0].interface
+# 解析设备名并 `bind interfaces only`；开机时 ksmbd 启动早于 zerotier 入网，
+# zt 设备还没出现，接口解析会把它跳过（network_is_up 失败）——结果 samba
+# 只绑了 br-lan，外网 ZT 设备访问 445 直接 Connection refused。
+# 本脚本在 zt* 网卡注册时补一次 ksmbd restart，开机时序问题即消除。
+#
+# ksmbd 不在的档位（minimal）自动跳过。
+
+[ "$ACTION" = "add" ] || exit 0
+case "$INTERFACE" in
+	zt*) [ -x /etc/init.d/ksmbd ] && /etc/init.d/ksmbd restart ;;
+esac
+exit 0
