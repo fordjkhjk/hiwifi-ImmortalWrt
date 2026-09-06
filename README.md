@@ -195,7 +195,7 @@ files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dn
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
 files/etc/hotplug.d/net/60-ksmbd-zerotier  # ZT 网卡出现时重启 ksmbd（补绑 zt 接口，解决开机时序）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
-files/etc/health_sample.sh              # 每 5 分钟记录负载/可用内存到 /tmp/health.log（崩溃取证；cron 由 zz-hc5962-custom 第 10 节挂载）
+files/etc/health_sample.sh              # 每 5 分钟记录负载/可用内存，双写 /tmp（内存盘）+ /root（闪存，重启不丢，崩溃取证）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
 package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系统 → 固件升级，仅 full 档位）
