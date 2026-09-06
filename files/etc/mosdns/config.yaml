@@ -1,7 +1,7 @@
 # mosdns v5.3.3 分流配置（plugins-only 原生格式，实测通过）
 #
 # DNS 链路：dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流
-#   - 国内域名（cn.txt 命中）→ forward_local（5 家国内 DNS 并行，取最快）
+#   - 国内域名（cn.txt 命中）→ forward_local（3 家国内 UDP DNS 并行，取最快）
 #   - 国外域名（未命中）    → socks5 隧道查 8.8.8.8，隧道不可用时兜底（114 优先）
 #   - 广告过滤不在这里做，交给上游的 AdGuard Home
 #
@@ -9,6 +9,16 @@
 # 二进制文件；域名分流用 domain_set 加载纯文本列表（files/etc/mosdns/cn.txt，
 # 源自 felixonmars/dnsmasq-china-list，每行一个域名）。
 # 本配置已用官方 v5.3.3 Windows 二进制实跑验证：加载成功 + 国内外分流正确。
+#
+# 重要（2026-09-06 实机故障，请勿改回）：国内上游曾额外挂了两条 DoH
+#     - addr: https://dns.alidns.com/dns-query
+#     - addr: https://doh.pub/dns-query
+# 结果形成「自举死锁」：mosdns 要连 DoH 需先解析它的域名 → 用系统 resolver
+# 127.0.0.1:53 → dnsmasq → AGH:5335 → 又回到 mosdns 自己 = 闭环。
+# 平时被 DNS 缓存掩盖，缓存一失效就死锁几十秒，整机（LuCI / SSH / AGH 界面）
+# 全部卡死，几分钟后自愈。详见仓库根目录《故障分析-DNS自举死锁-2026-09-06.md》。
+# 修复：国内上游只保留 IP 形式——IP 不需要解析，天然不成环。
+# 防污染是国外链路的职责（走 socks5 隧道查 8.8.8.8），国内用不上 DoH。
 
 log:
   level: info
@@ -21,7 +31,8 @@ plugins:
     args:
       files: [/etc/mosdns/cn.txt]
 
-  # 2. 国内上游：5 家并行（3 UDP + 2 DoH），取最快应答
+  # 2. 国内上游：3 家 UDP 并行，取最快应答
+  #    只写 IP 不写域名：写成域名的上游会与本机 DNS 链形成自举死锁
   - tag: forward_local
     type: forward
     args:
@@ -29,8 +40,6 @@ plugins:
         - addr: 223.5.5.5
         - addr: 119.29.29.29
         - addr: 114.114.114.114
-        - addr: https://dns.alidns.com/dns-query
-        - addr: https://doh.pub/dns-query
 
   # 3. 国外主路：走 ssr+ 的本地 socks5 隧道查 8.8.8.8（防污染）
   #    端口 1080 是 helloworld/ssr+ 的默认 socks5 端口，以路由器界面实际为准
