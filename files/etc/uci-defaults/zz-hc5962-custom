@@ -14,6 +14,7 @@
 #   - 关闭 IPv4 DHCP 与 IPv6 的 RA / DHCPv6
 #   - 防火墙 NAT 回程规则
 #   - 每周三 04:00 定时重启
+#   - 每 5 分钟健康采样（崩溃取证）
 #
 
 # ------------------------------------------------------------------
@@ -169,6 +170,36 @@ mkdir -p /etc/crontabs
 if ! grep -qF 'touch /etc/banner' /etc/crontabs/root 2>/dev/null; then
     echo "$CRON_LINE" >> /etc/crontabs/root
     chmod 600 /etc/crontabs/root
+    /etc/init.d/cron enable 2>/dev/null
+fi
+
+# ------------------------------------------------------------------
+# 10. 健康采样：每 5 分钟记录负载 / 可用内存 / RSS 前 3 进程
+#
+# 目的（2026-09-06 实机事故）：本机曾发生「可用内存耗尽 → 内核强制回收
+# → UBI 闪存 I/O 阻塞（大量 kworker 卡 D 状态）→ 全机假死」，负载飙到
+# 31、SSH / LuCI / 翻墙全断，只能强制重启。而 syslog、dmesg、AGH 查询
+# 日志全在内存盘，重启即清空；本机也没有 /sys/fs/pstore。结果是每次
+# 崩溃都拿不到现场，无法定性是谁吃掉了内存。
+#
+# 因此常驻一个轻量采样，把趋势留在 /tmp/health.log，下次崩溃前能看出
+# 可用内存是怎么一步步掉下去的，从而定位泄漏源。
+#
+# 写法要点：
+#   */5 * * * *          5 分钟一次，够密；开销可忽略（几百毫秒）
+#   日志名不含 ssrplus.log
+#                        ssr+ 的 add_cron 用 `sed -i '/ssrplus.log/d'`
+#                        清理自己的任务，行里若有该字样会被它误删。
+#                        取名 health_sample 可避开。
+#   chmod 600            crond 要求属主文件权限正确，否则整份 crontab 不执行
+#
+# 查看方式：`tail -30 /tmp/health.log`（重启后从空开始，属正常）
+# ------------------------------------------------------------------
+if [ -x /etc/health_sample.sh ]; then
+    if ! grep -qF 'health_sample' /etc/crontabs/root 2>/dev/null; then
+        echo '*/5 * * * * /etc/health_sample.sh' >> /etc/crontabs/root
+        chmod 600 /etc/crontabs/root
+    fi
     /etc/init.d/cron enable 2>/dev/null
 fi
 
