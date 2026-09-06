@@ -10,19 +10,26 @@
 # 需求映射:
 #   - 固件 IP      : 192.168.112.200
 #   - 网关         : 192.168.112.1
-#   - DNS          : 114.114.114.114
+#   - DNS          : 127.0.0.1（路由器自己走本机 DNS 链，见下方说明）
 #   - 关闭 IPv4 DHCP 与 IPv6 的 RA / DHCPv6
 #   - 防火墙 NAT 回程规则
+#   - 每周三 04:00 定时重启
 #
 
 # ------------------------------------------------------------------
 # 1. LAN 接口: IP / 网关 / DNS
+#
+# 注意（2026-09-06 修正）：这里原来是 114.114.114.114，会把
+# files/etc/uci-defaults/99-dns-setup 设的 127.0.0.1 覆盖掉——
+# uci-defaults 按文件名字母序执行，"99-" 在 "zz-" 之前，后者最后生效。
+# 路由器本机若用 114 问 DNS，会被污染，导致 ssr+ 网页的「谷歌连通性检查」
+# 拿假 IP 去连，永远误报「连接错误」。这里必须保持 127.0.0.1。
 # ------------------------------------------------------------------
 uci -q batch <<'EOF'
 set network.lan.ipaddr='192.168.112.200'
 set network.lan.netmask='255.255.255.0'
 set network.lan.gateway='192.168.112.1'
-set network.lan.dns='114.114.114.114'
+set network.lan.dns='127.0.0.1'
 set network.lan.delegate='0'
 commit network
 EOF
@@ -138,6 +145,31 @@ set network.zerotier.proto='none'
 set network.zerotier.device='ztuze4o5om'
 commit network
 EOF
+fi
+
+# ------------------------------------------------------------------
+# 9. 定时重启：每周三 04:00
+#
+# 目的：本机内存 244MB，常驻 AdGuard Home + mosdns + xray + ZeroTier，
+# 可用内存长期在 30~40MB。每周重启一次清理碎片、释放被长期占用的缓存。
+#
+# 写法要点：
+#   `0 4 * * 3`          周三 04:00，与 ssr+ 订阅更新（每天 02:00）错开 2 小时
+#   `sleep 70`           避开整点任务扎堆
+#   `touch /etc/banner`  banner 在 overlay（持久区），重启后时间戳保留，
+#                        随时可用 `ls -l /etc/banner` 查上次重启时间
+#   `/sbin/reboot`       绝对路径：cron 执行时的 PATH 与登录时不同，
+#                        写绝对路径可避免「命令找不到」导致任务静默失败
+#
+# 副作用：AGH 过滤规则存在 /var（内存盘），重启后丢失并重新下载
+# （约 4.3MB，耗时可能较长），重启当天上午去广告可能有空窗期。
+# ------------------------------------------------------------------
+CRON_LINE='0 4 * * 3 sleep 70 && touch /etc/banner && /sbin/reboot'
+mkdir -p /etc/crontabs
+if ! grep -qF 'touch /etc/banner' /etc/crontabs/root 2>/dev/null; then
+    echo "$CRON_LINE" >> /etc/crontabs/root
+    chmod 600 /etc/crontabs/root
+    /etc/init.d/cron enable 2>/dev/null
 fi
 
 exit 0
