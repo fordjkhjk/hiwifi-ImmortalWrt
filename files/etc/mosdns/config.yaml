@@ -2,7 +2,7 @@
 #
 # DNS 链路：dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流
 #   - 国内域名（cn.txt 命中）→ forward_local（3 家国内 UDP DNS 并行，取最快）
-#   - 国外域名（未命中）    → socks5 隧道查 8.8.8.8，隧道不可用时兜底（114 优先）
+#   - 国外域名（未命中）    → socks5 隧道内用 DoH 查 8.8.8.8/1.1.1.1，失败才直连兜底
 #   - 广告过滤不在这里做，交给上游的 AdGuard Home
 #
 # 说明：v5.3.3 已移除 data_providers/servers 顶层键，也不支持 geosite.dat
@@ -18,7 +18,9 @@
 # 平时被 DNS 缓存掩盖，缓存一失效就死锁几十秒，整机（LuCI / SSH / AGH 界面）
 # 全部卡死，几分钟后自愈。详见仓库根目录《故障分析-DNS自举死锁-2026-09-06.md》。
 # 修复：国内上游只保留 IP 形式——IP 不需要解析，天然不成环。
-# 防污染是国外链路的职责（走 socks5 隧道查 8.8.8.8），国内用不上 DoH。
+# 防污染是国外链路的职责（隧道内 DoH），国内用不上 DoH。
+# 同一条「只写 IP」的规则也适用于国外上游：写成 IP 型 DoH 就无需 bootstrap。
+# 详见第 3 节 forward_via_tunnel 的注释（2026-09-07 由 UDP 上游改为 DoH）。
 
 log:
   level: info
@@ -41,14 +43,26 @@ plugins:
         - addr: 119.29.29.29
         - addr: 114.114.114.114
 
-  # 3. 国外主路：走 ssr+ 的本地 socks5 隧道查 8.8.8.8（防污染）
+  # 3. 国外主路：走 ssr+ 的本地 socks5 隧道，用 DoH 查 8.8.8.8 / 1.1.1.1（防污染）
   #    端口 1080 是 helloworld/ssr+ 的默认 socks5 端口，以路由器界面实际为准
+  #
+  #    2026-09-07 实测改动：上游由 UDP 的 8.8.8.8 改为 DoH（https 型）。原因：
+  #    socks5 有两种用法——CONNECT（转 TCP）与 UDP ASSOCIATE（转 UDP）。上游写
+  #    裸 IP（= UDP 查询）时走的是后者，需要机场服务端把 UDP 从隧道里还原出去；
+  #    实测 susun 机场（trojan+ws 与 trojan+gRPC 两种传输、76 个节点）一律不转发
+  #    UDP，于是每个国外查询都卡满 5 秒超时，最终只能落到兜底拿 114 的污染结果。
+  #    DoH 走 443 = TCP，用 socks5 的 CONNECT，与浏览器流量同路，机场必然转发。
+  #    请勿改回 UDP 上游，除非换了一家确认支持 UDP 转发的机场。
+  #
+  #    上游只写 IP：8.8.8.8 / 1.1.1.1 本身就是 IP，无需解析，所以不用配 bootstrap，
+  #    也不会形成上面的自举死锁；写成 https://dns.google/dns-query 这类域名型就会。
   - tag: forward_via_tunnel
     type: forward
     args:
       socks5: 127.0.0.1:1080
       upstreams:
-        - addr: 8.8.8.8
+        - addr: https://8.8.8.8/dns-query
+        - addr: https://1.1.1.1/dns-query
 
   # 4. 国外兜底：隧道不可用时的直连路径。
   #    首选 114（境内可达、响应快）：境外 UDP 直连（8.8.8.8 等）反正被污染，
@@ -61,12 +75,16 @@ plugins:
         - addr: 1.1.1.1
 
   # 5. 国外路径：先隧道、失败兜底直连
+  #    threshold 2026-09-07 由 500 提到 2500：DoH 首次查询要先建 TCP + TLS（走隧道
+  #    到境外）实测约 2 秒，复用长连接后降到 0-1 秒。500ms 时兜底（114 直连，30ms
+  #    就回）几乎必定抢先，把污染结果当成答案返回 —— 等于主路白干。
+  #    代价：隧道真的断了时，每个国外查询要等 2.5 秒才走兜底（原 UDP 时代是 5 秒）。
   - tag: foreign_route
     type: fallback
     args:
       primary: forward_via_tunnel
       secondary: forward_direct
-      threshold: 500
+      threshold: 2500
 
   # 6. 缓存（AGH 漏掉的查询在这里兜一层，减少对上游的重复请求）
   - tag: cache
