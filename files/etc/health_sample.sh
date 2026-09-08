@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# 健康采样 v1.02：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
+# 健康采样 v1.03：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
 #                 + Xray 资源占用 / DoH 隧道连接数 / br-lan 收发速率
 #                 + Xray 单进程内存超限时自动重启（带冷却期）
 #
@@ -41,6 +41,14 @@
 #   2) Xray 单进程 RSS 超过 50MB 自动重启 shadowsocksr（30 分钟冷却）。
 #      这是不依赖根因的兜底：根因至今未定论，但「Xray 超过 50MB 就会抽干
 #      内存」是实测事实，掐掉它就能拦住崩溃链条。
+#
+# v1.03 修正（2026-09-08）：进程名改为自动发现，不再硬编码。
+#   原本写死匹配 comm="v2ray"。这是「认人靠脸」：只要 ssr+ 换了内核（软链名
+#   一变，比如 xray / naive / hysteria），匹配就落空 —— 而它落空时既不报错也
+#   不告警，XRSS_MAX 恒为 0，兜底永远不触发，日志看着一切正常。
+#   改为每次从 /var/etc/ssrplus/bin/ 读当前内核名再匹配，换内核自动跟着认。
+#   另：实测确认本机 comm=v2ray 命中 2 个进程、comm=xray 命中 0 个 —— 写 xray
+#   就是标准的静默失效，这正是这次要防的。
 #
 
 LOG=/tmp/health.log
@@ -91,15 +99,35 @@ echo "$CU $CN $CS $CI $CW $CQ $CSQ" > "$CPU_PREV"
 DPROC=$(ps | awk 'NR>1 && $4 ~ /D/ {n++} END {print n+0}')
 
 # ---------- Xray 资源占用 ----------
-# ssr+ 用的其实是 Xray，进程名显示为 v2ray（/var/etc/ssrplus/bin/v2ray 软链到
-# /usr/bin/xray）。它有 TCP / UDP 两个进程，所以阈值必须按「单个进程」判断：
+# 【进程名自动发现】ssr+ 把当前在用的内核软链到 /var/etc/ssrplus/bin/<名字>，
+# 现在是 bin/v2ray -> /usr/bin/xray（真身是 Xray 24.12.31）。内核记 comm 用的是
+# 启动时传进来的路径名、不解析软链接，所以进程名 = 这里的软链名。
+#
+# 为什么不硬编码 `v2ray`：ssr+ 支持多内核（v2ray / xray / trojan / naive /
+# hysteria ...），换内核时软链名跟着变。写死名字的话，一换就匹配不到 ——
+# 而且不报错、不告警，XRSS_MAX 恒为 0，保护形同虚设（静默失效）。
+# 读目录 = 脚本自己去问「今天谁当班」，换什么内核都自动认得。
+#
+# 兜底：/var/etc/ssrplus 是运行时目录，ssr+ 没启用时为空 → 名字列表空 →
+# 匹配不到 → 不触发，行为安全（服务没跑本就无需重启）。这里再给个兜底名单，
+# 万一整个插件换了（那时这脚本本来也要重配），不至于立刻失效。
+PROXY_NAMES=$(ls /var/etc/ssrplus/bin/ 2>/dev/null | tr '\n' ' ')
+PROXY_NAMES=$(echo $PROXY_NAMES)          # 去掉首尾空白（否则拼接后会多出空格）
+[ -z "$PROXY_NAMES" ] && PROXY_NAMES="v2ray xray"
+
+# 它有 TCP / UDP 两个进程，所以阈值必须按「单个进程」判断：
 # 两个进程合计基线就 35MB 左右，按合计算离 50MB 太近，会频繁误触发。
 XRSS_MAX=0
 XRSS_TOT=0
 XFD=0
 for p in $(ls /proc | grep -E '^[0-9]+$'); do
     c=$(cat /proc/$p/comm 2>/dev/null)
-    [ "$c" = "v2ray" ] || continue
+    [ -n "$c" ] || continue                # 读不到名字（内核线程等）不算命中
+    # 名字在候选列表里才算命中（两侧补空格，避免子串误匹配：v2ray 不会误配 v2rayx）
+    case " $PROXY_NAMES " in
+        *" $c "*) ;;
+        *) continue ;;
+    esac
     r=$(grep VmRSS /proc/$p/status 2>/dev/null | awk '{print $2}')
     [ -n "$r" ] || continue
     XRSS_TOT=$((XRSS_TOT + r))
@@ -173,6 +201,7 @@ if [ "$XRSS_MAX" -gt "$XRSS_LIMIT" ] 2>/dev/null; then
         echo "=============================================="
         echo "!! XRAY RESTART CHECK $(date '+%F %T')"
         echo "   xray 单进程最大 RSS=${XRSS_MAX}kB  阈值=${XRSS_LIMIT}kB  两进程合计=${XRSS_TOT}kB"
+        echo "   匹配到的进程名=[$PROXY_NAMES]（自动发现，非硬编码）"
     } >> "$ALERT"
     if [ $((NOWTS - LAST)) -gt "$RESTART_COOL" ]; then
         echo "   冷却期已过（距上次 $((NOWTS - LAST))s），执行 shadowsocksr restart" >> "$ALERT"

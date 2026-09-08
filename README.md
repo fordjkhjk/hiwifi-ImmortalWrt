@@ -199,7 +199,7 @@ files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dn
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
 files/etc/hotplug.d/net/60-ksmbd-zerotier  # ZT 网卡出现时重启 ksmbd（补绑 zt 接口，解决开机时序）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
-files/etc/health_sample.sh              # 健康采样 v1.02：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 自动重启（30 分钟冷却）
+files/etc/health_sample.sh              # 健康采样 v1.03：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 自动重启（30 分钟冷却，进程名自动发现）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
 package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系统 → 固件升级，仅 full 档位）
@@ -921,6 +921,24 @@ I/O 阻塞 → 全机 D 状态假死 31 分钟才自愈。
 
 **为什么是 50MB**：全天最高见过 39.2MB（正常），崩溃时 69.8MB，50MB 卡在中间，
 既不会误伤，又明显早于崩溃水位。
+
+**进程名是自动发现的，不要写死（v1.03 修正）**：ssr+ 把当前在用的内核软链到
+`/var/etc/ssrplus/bin/<名字>`，现在是 `bin/v2ray -> /usr/bin/xray`。内核记进程名
+用的是启动时传进来的路径名、不解析软链接，所以 `comm` 显示 `v2ray` ——
+**实测 `comm=v2ray` 命中 2 个进程，`comm=xray` 命中 0 个**。
+
+脚本每次从这个目录读名字再匹配，而不是硬编码：
+
+```sh
+PROXY_NAMES=$(ls /var/etc/ssrplus/bin/ 2>/dev/null | tr '\n' ' ')
+PROXY_NAMES=$(echo $PROXY_NAMES)
+[ -z "$PROXY_NAMES" ] && PROXY_NAMES="v2ray xray"
+```
+
+这么做的原因：ssr+ 支持多内核（v2ray / xray / trojan / naive / hysteria …），
+换内核时软链名就跟着变。**写死名字的话，一换就匹配不到，而且它不报错、不告警** ——
+`XRSS_MAX` 恒为 0，兜底永远不触发，日志看着一切正常（静默失效）。读目录则换什么
+内核都自动认得。ssr+ 没启用时目录为空 → 匹配不到 → 不触发，行为是安全的。
 
 ### 它是怎么挂上去的
 
