@@ -199,7 +199,7 @@ files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dn
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
 files/etc/hotplug.d/net/60-ksmbd-zerotier  # ZT 网卡出现时重启 ksmbd（补绑 zt 接口，解决开机时序）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
-files/etc/health_sample.sh              # 健康采样 v1.03：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 自动重启（30 分钟冷却，进程名自动发现）
+files/etc/health_sample.sh              # 健康采样 v1.04：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 自动重启（30 分钟冷却，进程名自动发现）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
 package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系统 → 固件升级，仅 full 档位）
@@ -939,6 +939,21 @@ PROXY_NAMES=$(echo $PROXY_NAMES)
 换内核时软链名就跟着变。**写死名字的话，一换就匹配不到，而且它不报错、不告警** ——
 `XRSS_MAX` 恒为 0，兜底永远不触发，日志看着一切正常（静默失效）。读目录则换什么
 内核都自动认得。ssr+ 没启用时目录为空 → 匹配不到 → 不触发，行为是安全的。
+
+各内核在这个目录里的软链名（全部出自 `/etc/init.d/shadowsocksr` 的 `ln_start_bin`
+调用点）：vmess/vless/trojan（Xray 承载）恒为 `v2ray`、独立 trojan 为 `trojan`、
+naive 为 `naive`、hysteria 为 `hysteria`、tuic 为 `tuic-client`、ss/ssr 为
+`ss-redir`/`ssr-redir`、ss-rust 为 `sslocal`。
+
+**排除名单（v1.04 补）**：这个目录不只有代理内核，ssr+ 自启的 DNS / 辅助进程也走
+同一个 `ln_start_bin`，一样在里面留软链 —— `mosdns`(326,737)、`chinadns-ng`(416,826)、
+`dnsproxy`(335,382)、`dns2tcp`(293)、`dns2socks`(298,716)、`dns2socks-rust`(303,719)、
+`microsocks`、`redsocks2`、`ipt2socks`、`shadow-tls`。
+
+启用 ssr+ 自带 DNS 分流后，这些名字会混进候选列表被一起统计；mosdns 现在就已
+14.6MB，它涨到 50MB 会被误判成「Xray 爆了」而白重启一次 shadowsocksr。所以从发现
+结果里剔除它们。用「排除」而非「白名单」：将来漏写某个名字，后果只是少统计一个
+进程，不会退回 v1.02 那种静默失效。
 
 ### 它是怎么挂上去的
 

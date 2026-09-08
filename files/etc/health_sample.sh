@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# 健康采样 v1.03：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
+# 健康采样 v1.04：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
 #                 + Xray 资源占用 / DoH 隧道连接数 / br-lan 收发速率
 #                 + Xray 单进程内存超限时自动重启（带冷却期）
 #
@@ -49,6 +49,13 @@
 #   改为每次从 /var/etc/ssrplus/bin/ 读当前内核名再匹配，换内核自动跟着认。
 #   另：实测确认本机 comm=v2ray 命中 2 个进程、comm=xray 命中 0 个 —— 写 xray
 #   就是标准的静默失效，这正是这次要防的。
+#
+# v1.04 补强（2026-09-08）：给自动发现加排除名单。
+#   查 /etc/init.d/shadowsocksr 的 ln_start_bin 调用点时发现，这个目录不只有代理
+#   内核，ssr+ 自启的 DNS / 辅助进程（mosdns、chinadns-ng、dnsproxy、dns2socks、
+#   ipt2socks、redsocks2 ...）也在里面留软链。启用 ssr+ 自带 DNS 分流后它们会被
+#   一起统计，mosdns 涨到 50MB 就会误判成 Xray 爆了、白重启一次。用排除名单剔掉。
+#   注意是「排除」不是「白名单」—— 漏写顶多少统计，不会退回静默失效。
 #
 
 LOG=/tmp/health.log
@@ -108,11 +115,29 @@ DPROC=$(ps | awk 'NR>1 && $4 ~ /D/ {n++} END {print n+0}')
 # 而且不报错、不告警，XRSS_MAX 恒为 0，保护形同虚设（静默失效）。
 # 读目录 = 脚本自己去问「今天谁当班」，换什么内核都自动认得。
 #
+# 【排除名单】这个目录里不只有代理内核 —— ssr+ 自启的 DNS / 辅助进程也走同一个
+# ln_start_bin，一样会在里面留软链（行号见 /etc/init.d/shadowsocksr）：
+#   mosdns 326/737 · chinadns-ng 416/826 · dnsproxy 335/382 · dns2tcp 293
+#   dns2socks 298/716 · dns2socks-rust 303/719 · microsocks · redsocks2
+#   ipt2socks · shadow-tls
+# 它们不是代理内核，内存量级跟 Xray 无关。一旦启用 ssr+ 自带的 DNS 分流，这些
+# 名字就会混进候选列表，被一起算进 XRSS_MAX —— mosdns 现在就已 14.6MB，它涨到
+# 50MB 会被误判成「Xray 爆了」，白白重启一次 shadowsocksr（重启也治不好它）。
+#
+# 用「排除」而不是「白名单」：将来万一漏写了某个辅助进程的名字，后果只是少统计
+# 一个进程，不会退化成 v1.02 那种「名字对不上 → 恒为 0 → 兜底从不触发」的静默失效。
+EXCLUDE_NAMES="mosdns chinadns-ng dnsproxy dns2tcp dns2socks dns2socks-rust microsocks redsocks2 ipt2socks shadow-tls"
+PROXY_NAMES=""
+for n in $(ls /var/etc/ssrplus/bin/ 2>/dev/null); do
+    case " $EXCLUDE_NAMES " in
+        *" $n "*) continue ;;
+    esac
+    PROXY_NAMES="$PROXY_NAMES $n"
+done
+PROXY_NAMES=$(echo $PROXY_NAMES)          # 去掉首尾空白（否则拼接后会多出双空格）
 # 兜底：/var/etc/ssrplus 是运行时目录，ssr+ 没启用时为空 → 名字列表空 →
 # 匹配不到 → 不触发，行为安全（服务没跑本就无需重启）。这里再给个兜底名单，
 # 万一整个插件换了（那时这脚本本来也要重配），不至于立刻失效。
-PROXY_NAMES=$(ls /var/etc/ssrplus/bin/ 2>/dev/null | tr '\n' ' ')
-PROXY_NAMES=$(echo $PROXY_NAMES)          # 去掉首尾空白（否则拼接后会多出空格）
 [ -z "$PROXY_NAMES" ] && PROXY_NAMES="v2ray xray"
 
 # 它有 TCP / UDP 两个进程，所以阈值必须按「单个进程」判断：
