@@ -199,7 +199,7 @@ files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dn
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
 files/etc/hotplug.d/net/60-ksmbd-zerotier  # ZT 网卡出现时重启 ksmbd（补绑 zt 接口，解决开机时序）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
-files/etc/health_sample.sh              # 健康采样 v1.04：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 自动重启（30 分钟冷却，进程名自动发现）
+files/etc/health_sample.sh              # 健康采样 v1.05：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 且可用内存 <30MB 才自动重启（双条件，30 分钟冷却，进程名自动发现+排除名单）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
 package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系统 → 固件升级，仅 full 档位）
@@ -849,7 +849,7 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | `u% / s%` | 用户态 / 内核态 CPU | 真的在计算时的占比 |
 | `io%` | **iowait，等 I/O 的时间占比** | 接近 0；高了说明卡在 I/O |
 | `Dproc` | D 状态（不可中断，通常卡 I/O）进程数 | **0** |
-| `xray.max` | Xray **单个进程**的最大 RSS（kB） | 17～20MB；**>50MB 会触发自动重启** |
+| `xray.max` | Xray **单个进程**的最大 RSS（kB） | 空闲 17～20MB、看视频 40～44MB；**>50MB 且可用内存 <30MB 才触发自动重启** |
 | `xray.tot` | 两个 Xray 进程的 RSS 合计（kB） | 35MB 左右 |
 | `xray.fd` | 两个 Xray 进程打开的 fd 总数 | 30 上下，粗略反映连接数 |
 | `dohconn` | 本机到 8.8.8.8 / 1.1.1.1 的 443 连接数 | 0～2（空闲时 0） |

@@ -39,6 +39,7 @@
 #      动机：那次崩溃只能看到「Xray 涨了 40MB」，却无法判断是「流量驱动」
 #      还是「连接驱动」——采样里压根没有流量和连接数。补上后下次可直接区分。
 #   2) Xray 单进程 RSS 超过 50MB 自动重启 shadowsocksr（30 分钟冷却）。
+#      v1.05 起改为双条件：还要求可用内存低于 30MB。详见第 3 节。
 #      这是不依赖根因的兜底：根因至今未定论，但「Xray 超过 50MB 就会抽干
 #      内存」是实测事实，掐掉它就能拦住崩溃链条。
 #
@@ -64,8 +65,10 @@ ALERT=/root/health-alert.log
 CPU_PREV=/tmp/health_cpu_prev
 NET_PREV=/tmp/health_net_prev
 
-# Xray 单进程内存阈值（kB）与重启冷却期（秒）——见文件末尾第 3 节
+# Xray 单进程内存阈值（kB）、可用内存阈值（kB）与重启冷却期（秒）——见文件末尾第 3 节
+# 两个阈值是「与」关系，必须同时越线才重启，理由见第 3 节
 XRSS_LIMIT=51200
+AVAIL_LIMIT=30720
 RESTART_COOL=1800
 XR_TS=/tmp/health_xray_restart
 
@@ -211,21 +214,29 @@ fi
 #   事实：Xray 单进程一旦冲到 70MB，内存必然见底。
 #   所以这里做不依赖根因的兜底 —— 超过阈值就掐掉，把崩溃链条拦在半路。
 #
-# 阈值口径（重要）：按「单个进程」判断，不是两个加起来。
-#   实测基线：两进程各 17~20MB（合计约 35MB）；全天最高 39.2MB；崩溃时 69.8MB。
+# 阈值口径（重要）：按「单个进程」判断，不是几个加起来。
+#   实测基线：单进程 17~20MB；全天最高 39.2MB；崩溃时 69.8MB。
 #   50MB（51200kB）既有足够余量避免误触发，又明显早于崩溃水位。
-#   若改成按两进程合计判断，35MB 的基线离 50MB 只剩 15MB，会频繁误触发。
+#
+# 为什么要加「可用内存」这第二个条件（2026-09-09 改，两条件是「与」关系）：
+#   Xray 的内存是流量驱动的收发缓冲区，看高清视频时单进程冲到 42~44MB 属于
+#   正常现象且能自愈。只按 50MB 单个条件判断，会在系统其实还很宽裕时白重启
+#   一次 —— 实测 2026-09-08 21:47 就是 Xray 44.5MB、可用 41.8MB，重启纯属误伤。
+#   真正危险的是「Xray 涨」和「系统见底」同时发生，所以要求两条线都越界。
+#   用真实事件校准：9/8 崩溃时 Xray 69.8MB + 可用 10MB，两条都过线，照样拦得住；
+#   9/8 21:47 看视频 Xray 44.5MB + 可用 41.8MB，两条都不过线，正确放过。
 #
 # 冷却期 1800s：防止内存持续偏高时每 5 分钟重启一次（重启风暴）。
 # 代价：翻墙会断约 10 秒（国内网络与 lan2 那台走主路由的设备不受影响）。
-if [ "$XRSS_MAX" -gt "$XRSS_LIMIT" ] 2>/dev/null; then
+if [ "$XRSS_MAX" -gt "$XRSS_LIMIT" ] 2>/dev/null && [ "$AV" -lt "$AVAIL_LIMIT" ] 2>/dev/null; then
     NOWTS=$(date +%s)
     LAST=0
     [ -f "$XR_TS" ] && LAST=$(cat "$XR_TS")
     {
         echo "=============================================="
         echo "!! XRAY RESTART CHECK $(date '+%F %T')"
-        echo "   xray 单进程最大 RSS=${XRSS_MAX}kB  阈值=${XRSS_LIMIT}kB  两进程合计=${XRSS_TOT}kB"
+        echo "   xray 单进程最大 RSS=${XRSS_MAX}kB  阈值=${XRSS_LIMIT}kB  合计=${XRSS_TOT}kB"
+        echo "   可用内存=${AV}kB  阈值=${AVAIL_LIMIT}kB  （两项须同时越线才重启）"
         echo "   匹配到的进程名=[$PROXY_NAMES]（自动发现，非硬编码）"
     } >> "$ALERT"
     if [ $((NOWTS - LAST)) -gt "$RESTART_COOL" ]; then
