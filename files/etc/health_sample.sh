@@ -1,8 +1,10 @@
 #!/bin/sh
 #
-# 健康采样 v1.04：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
+# 健康采样 v1.06：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
 #                 + Xray 资源占用 / DoH 隧道连接数 / br-lan 收发速率
+#                 + Shmem 与 /tmp 内存盘占用
 #                 + Xray 单进程内存超限时自动重启（带冷却期）
+#                 + 可用内存持续过低时的专项取证（v1.06 新增，见第 4 节）
 #
 # 位置: files/etc/health_sample.sh（由 zz-hc5962-custom 挂 cron）
 # 输出: /tmp/health.log         内存盘，重启清空（主用，零磨损）
@@ -72,12 +74,25 @@ AVAIL_LIMIT=30720
 RESTART_COOL=1800
 XR_TS=/tmp/health_xray_restart
 
+# 可用内存持续过低阈值（kB）、连续命中次数、计数器文件——见第 4 节
+# 25600kB = 25MB，比第 3 节的 30MB 更严；连续 3 次 = 持续 15 分钟
+AVAIL_HARD=25600
+LOWMEM_N=3
+LOWMEM_CT=/tmp/health_lowmem_ct
+
 # ---------- 采集 ----------
 AV=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
 MF=$(grep MemFree /proc/meminfo | awk '{print $2}')
 CA=$(grep '^Cached:' /proc/meminfo | awk '{print $2}')
 AP=$(grep AnonPages /proc/meminfo | awk '{print $2}')
 SU=$(grep SUnreclaim /proc/meminfo | awk '{print $2}')
+SH=$(grep Shmem /proc/meminfo | awk '{print $2}')
+
+# /tmp 是 tmpfs（内存盘）：AGH 的工作目录与查询日志、ssr+ 生成的域名表都在这。
+# 它会计入 Cached，但在没有 swap 的机器上**永远无法回收**——涨一兆就少一兆
+# 可用内存，重启前不会回落。必须单独记，否则「Cached 看着很高、可用内存却很低」
+# 容易被误判成「页缓存而已，紧张时内核会自己丢」。
+TP=$(df -k /tmp 2>/dev/null | awk 'NR==2{print $3}')
 
 LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 # 1 分钟负载取整，供阈值比较（busybox sh 不支持小数比较）
@@ -129,6 +144,18 @@ DPROC=$(ps | awk 'NR>1 && $4 ~ /D/ {n++} END {print n+0}')
 #
 # 用「排除」而不是「白名单」：将来万一漏写了某个辅助进程的名字，后果只是少统计
 # 一个进程，不会退化成 v1.02 那种「名字对不上 → 恒为 0 → 兜底从不触发」的静默失效。
+# v1.06 补强（2026-09-10，内存增长元凶排查之后）：
+#   1) 常规采样行增加 Shmem 与 /tmp（tmpfs）占用。
+#      动机：那次排查的结论是「进程 RSS 全都不涨，唯一只增不减的是内存盘」——
+#      AdGuardHome 的工作目录 /var/adguardhome（/var 就是 /tmp）整个在 tmpfs 里，
+#      查询日志每天长 5~13MB，而 tmpfs 页在无 swap 时无法回收。这么关键的一项
+#      当时却完全没有采样，只能临时部署采集脚本。补上后趋势直接可见。
+#   2) 新增「可用内存持续过低」专项取证（第 4 节）。
+#      原有的 Xray 兜底只在「Xray 超阈值 + 内存见底」时动作，如果内存是被别的
+#      东西吃掉的（tmpfs / 内核 slab / 别的进程），它就全程沉默。补一条按可用
+#      内存单独触发的取证，把 /tmp 明细一并钉进现场。
+#      注意它只取证、不动作 —— 低内存的成因还没穷举完，贸然自动重启服务
+#      既可能掩盖真凶，也会误伤正在用网的人。
 EXCLUDE_NAMES="mosdns chinadns-ng dnsproxy dns2tcp dns2socks dns2socks-rust microsocks redsocks2 ipt2socks shadow-tls"
 PROXY_NAMES=""
 for n in $(ls /var/etc/ssrplus/bin/ 2>/dev/null); do
@@ -193,7 +220,7 @@ TOP3=$(for p in $(ls /proc | grep -E '^[0-9]+$'); do
     [ -n "$r" ] && [ "$r" -gt 2000 ] && echo "$r:$c"
 done | sort -rn | head -3 | tr '\n' ' ')
 
-LINE="$(date '+%F %T') load=[$LOAD] avail=${AV}kB mem=[free=$MF cached=$CA anon=$AP sunrecl=$SU] cpu=[$CPU_TXT] Dproc=$DPROC xray=[max=${XRSS_MAX} tot=${XRSS_TOT}kB fd=$XFD dohconn=$DOHC] net=[$NET_TXT] top=[$TOP3]"
+LINE="$(date '+%F %T') load=[$LOAD] avail=${AV}kB mem=[free=$MF cached=$CA anon=$AP sunrecl=$SU shmem=$SH tmpfs=$TP] cpu=[$CPU_TXT] Dproc=$DPROC xray=[max=${XRSS_MAX} tot=${XRSS_TOT}kB fd=$XFD dohconn=$DOHC] net=[$NET_TXT] top=[$TOP3]"
 
 # ---------- 常规双写 ----------
 echo "$LINE" >> "$LOG"
@@ -258,6 +285,74 @@ if [ "$XRSS_MAX" -gt "$XRSS_LIMIT" ] 2>/dev/null && [ "$AV" -lt "$AVAIL_LIMIT" ]
     fi
     echo "==============================================" >> "$ALERT"
     echo >> "$ALERT"
+fi
+
+# ---------- 可用内存持续过低：专项取证 ----------
+# 背景（2026-09-10 内存增长元凶排查的结论）：
+#   本机 244MB、无 swap。排查结果是「每个进程的 RSS 都稳、甚至往下走，
+#   唯一只增不减的是 /tmp 这个内存盘」——AdGuardHome 的工作目录
+#   /var/adguardhome（OpenWrt 上 /var 就是 /tmp）整个泡在 tmpfs 里，
+#   查询日志 querylog.json 每天长 5~13MB，而 tmpfs 页在没有 swap 时
+#   无法换出也无法回收。按这个速度，距每周三 04:00 重启还有 6 天时，
+#   可用内存就会从 52MB 掉到 23MB（低于 25MB 危险线）。
+#
+# 与第 3 节 Xray 兜底的分工：
+#   第 3 节是「动作」——条件满足就重启 shadowsocksr，因为已实测确认
+#   「Xray 单进程冲到 70MB 必然抽干内存」，掐掉它能拦住崩溃链条。
+#   本节是「取证」——不自动做任何事。低内存的成因没有穷举完（tmpfs 只是
+#   已确认的其中一个），此时自动重启别的服务，既可能掩盖真凶，也会误伤
+#   正在用网的人。这里只负责把现场钉死，等人来判断。
+#
+# 为什么要求「连续 N 次」而不是一次命中就报：
+#   看高清视频时 Xray 的收发缓冲区膨胀会把可用内存短暂压到 25MB 以下
+#   （实测 2026-09-10 09:32 一次流量突发就压到 37MB，10 分钟内自愈）。
+#   单次命中基本都是这种误报；连续 3 次 = 持续 15 分钟，才说明真的下不来。
+#
+# 为什么现场里要记 /tmp 明细：
+#   2026-09-10 那次排查，为了拿到「/tmp 里到底是谁在涨」不得不临时部署
+#   采集脚本跑一天。把这条信息直接写进告警现场，下次不用再临时装东西。
+if [ "$AV" -lt "$AVAIL_HARD" ] 2>/dev/null; then
+    N=0
+    [ -f "$LOWMEM_CT" ] && N=$(cat "$LOWMEM_CT")
+    N=$((N + 1))
+    echo "$N" > "$LOWMEM_CT"
+    if [ "$N" -ge "$LOWMEM_N" ]; then
+        echo "0" > "$LOWMEM_CT"          # 归零重新计数：之后最多每 15 分钟报一次
+        if [ "$XRSS_MAX" -gt "$XRSS_LIMIT" ] 2>/dev/null; then
+            XVERDICT="超阈值(${XRSS_MAX}kB > ${XRSS_LIMIT}kB)，Xray 是主要嫌疑"
+        else
+            XVERDICT="未超阈值(${XRSS_MAX}kB <= ${XRSS_LIMIT}kB)，Xray 不是主因，优先查 tmpfs / 内核 slab"
+        fi
+        {
+            echo "=============================================="
+            echo "!! LOWMEM $(date '+%F %T')  可用内存连续 ${LOWMEM_N} 次低于 $((AVAIL_HARD / 1024))MB（约 $((LOWMEM_N * 5)) 分钟）"
+            echo "$LINE"
+            echo "---- Xray 是否背锅 ----"
+            echo "   $XVERDICT"
+            echo "---- 内存盘 /tmp（tmpfs，无 swap 时不可回收）----"
+            df -k /tmp 2>/dev/null
+            echo "---- /tmp 各目录占用 top10 ----"
+            du -sk /tmp/* 2>/dev/null | sort -rn | head -10
+            echo "---- AGH 工作目录 /var/adguardhome/data ----"
+            ls -l /var/adguardhome/data/ 2>/dev/null
+            echo "---- meminfo 关键项 ----"
+            grep -E 'MemTotal|MemAvailable|MemFree|AnonPages|SUnreclaim|Slab|Shmem|Cached' /proc/meminfo
+            echo "---- process RSS top10 ----"
+            for p in $(ls /proc | grep -E '^[0-9]+$'); do
+                r=$(grep VmRSS /proc/$p/status 2>/dev/null | awk '{print $2}')
+                c=$(cat /proc/$p/comm 2>/dev/null)
+                [ -n "$r" ] && [ "$r" -gt 1000 ] && echo "$r $c $p"
+            done | sort -rn | head -10
+            echo "=============================================="
+            echo
+        } >> "$ALERT"
+
+        if [ -f "$ALERT" ] && [ "$(wc -c < $ALERT)" -gt 150000 ]; then
+            tail -n 900 "$ALERT" > "$ALERT.tmp" && mv "$ALERT.tmp" "$ALERT"
+        fi
+    fi
+else
+    echo "0" > "$LOWMEM_CT"               # 恢复正常就清零，下次重新累计
 fi
 
 # ---------- 异常时抓详细现场 ----------

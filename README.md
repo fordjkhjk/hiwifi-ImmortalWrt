@@ -832,12 +832,12 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 ### 采样行怎么读
 
 ```
-2026-09-08 10:50:51 load=[0.66 0.18 0.11] avail=55100kB
-                    mem=[free=35116 cached=73908 anon=79160 sunrecl=24312]
-                    cpu=[u=4% s=6% io=0%]  Dproc=0
-                    xray=[max=18636 tot=37128kB fd=31 dohconn=0]
-                    net=[rx=2 tx=1KB/s]
-                    top=[30636:AdGuardHome 28308:mosdns 18636:v2ray]
+2026-09-10 10:40:06 load=[0.10 0.17 0.25] avail=53588kB
+                    mem=[free=28884 cached=80648 anon=72420 sunrecl=23436 shmem=13208 tmpfs=13208]
+                    cpu=[u=17% s=24% io=0%]  Dproc=0
+                    xray=[max=32748 tot=32748kB fd=24 dohconn=0]
+                    net=[rx=22 tx=8KB/s]
+                    top=[33720:AdGuardHome 32748:v2ray 17868:mosdns]
 ```
 
 | 字段 | 含义 | 正常值 |
@@ -846,6 +846,8 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | `avail` | 可用内存 | 50～90MB；**<40MB 预警，<25MB 危险**（事故前 16MB） |
 | `anon` | 用户进程占用的内存 | 它涨 = 某个进程在泄漏 |
 | `sunrecl` | 内核不可回收内存 | 它涨 = 内核对象泄漏（conntrack / dentry 等） |
+| `shmem` | 共享内存 / tmpfs 总量 | 见下节；**本机无 swap，这一项涨了就下不来** |
+| `tmpfs` | `/tmp` 内存盘已用（kB） | 平时 12～15MB；**>25MB 说明查询日志没被清掉** |
 | `u% / s%` | 用户态 / 内核态 CPU | 真的在计算时的占比 |
 | `io%` | **iowait，等 I/O 的时间占比** | 接近 0；高了说明卡在 I/O |
 | `Dproc` | D 状态（不可中断，通常卡 I/O）进程数 | **0** |
@@ -856,7 +858,8 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | `net` | br-lan 收发速率 KB/s（与上次采样求差） | 空闲个位数，看电影时能到几千 |
 | `top` | 占内存前三的进程 | AdGuardHome / mosdns / v2ray |
 
-> v1.02 新增 `xray.*` / `dohconn` / `net` 三组字段。动机见下节。
+> v1.02 新增 `xray.*` / `dohconn` / `net` 三组字段。动机见下节。  
+> v1.06 新增 `shmem` / `tmpfs` 两个字段。动机见「十四·五」。
 
 ### 崩溃后怎么判断性质（这张表最关键）
 
@@ -955,6 +958,98 @@ naive 为 `naive`、hysteria 为 `hysteria`、tuic 为 `tuic-client`、ss/ssr �
 结果里剔除它们。用「排除」而非「白名单」：将来漏写某个名字，后果只是少统计一个
 进程，不会退回 v1.02 那种静默失效。
 
+### 十四·五、内存盘 tmpfs：真正的「只增不减」项（2026-09-10 新增）
+
+这一节记录 2026-09-10 那次内存排查的结论，以及据此做的两处改动（① 和 ⑤）。
+
+#### 结论：进程全都不漏，涨的是内存盘
+
+用 09-09 04:02 周重启后的 29.9 小时干净基线（360 个 5 分钟采样）逐进程回归：
+
+| 观察对象 | 稳定期斜率 | 判定 |
+|---|---:|---|
+| AdGuardHome | −399 kB/h | 不漏（峰值 55.7MB 后自行回落，Go GC） |
+| mosdns | −205 kB/h | 不漏 |
+| zerotier-one | −0.2 kB/h | 纹丝不动 |
+| v2ray | +263 kB/h | 流量驱动，会自愈 |
+| **全部进程合计** | **−255 kB/h** | **不漏** |
+| anon（用户进程内存合计） | **−173 kB/h** | 开机 6 小时预热后即饱和，地板 66.0 / 67.4 / 66.7MB **持平** |
+| **shmem / tmpfs** | **+234 kB/h** | **严格单调，从不回落 ← 元凶** |
+
+也就是说，之前观察到的「anon 从 52MB 爬到 79MB」**不是泄漏**，而是开机预热
+（mosdns 启动 +27.5MB、v2ray 缓冲区 +20.9MB、AGH 缓存 +15.1MB、dnsmasq +10.8MB），
+6 小时后就饱和了。
+
+#### 元凶：AdGuardHome 的数据目录整个在内存里
+
+- AGH 的 workdir 是 `/var/adguardhome`，而 **OpenWrt 上 `/var` 就是 `/tmp`**，也就是 tmpfs
+- `files/etc/AdGuardHome.yaml` 原配置 `querylog.interval: 90`（90 天，`file_enabled: true`）
+  → 90 天内不轮转、不删除
+- 实测 `querylog.json` 每天长 **5～13MB**（随 DNS 查询量浮动，09-10 白天实测到 540 kB/h）
+- **本机 `SwapTotal = 0`** → tmpfs 页既不能换出也不能回收，涨一兆就少一兆可用内存
+
+`/tmp` 的常驻构成（09-10 实测）：
+
+| 文件 | 大小 | 性质 |
+|---|---:|---|
+| `/tmp/adguardhome/data/querylog.json` | 6.0→6.4 MB | **持续增长 ← 元凶** |
+| `/tmp/adguardhome/data/filters/1.txt` | 4.26 MB | 每 24h 原地刷新，固定 |
+| `/tmp/dnsmasq.d/.../gfw_list.conf` | 1.92 MB | ssr+ 生成，固定 |
+| `/tmp/adguardhome/data/stats.db` | 0.26 MB | 固定 |
+
+外推：距下次周重启还有 6 天时，tmpfs 会到 ~42MB，可用内存从 52MB 掉到 **~23MB**
+（低于 25MB 危险线）—— 不加处理几乎必然再次触发「内存耗尽 → UBI I/O 阻塞 → 全机假死」。
+
+#### 改动 ①：查询日志保留期 90 天 → 1 天，并每天 03:50 归零
+
+三层，缺一不可：
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| ① | `files/etc/AdGuardHome.yaml` → `querylog.interval: 24h` | 让 AGH 自己按保留期回收（首选，能否真回收待实测确认） |
+| ② | `files/etc/uci-defaults/zz-hc5962-custom` 第 11 节，cron `50 3 * * *` | **不依赖 AGH 的回收行为**，每天删掉 `querylog.json` 重来，是唯一确定能封顶的手段 |
+| ③ | 第 9 节每周三 04:00 整机重启 | 兜底，把 `/tmp` 整体清空 |
+
+cron 行：
+
+```
+50 3 * * * /etc/init.d/AdGuardHome stop >/dev/null 2>&1; rm -f /var/adguardhome/data/querylog.json; /etc/init.d/AdGuardHome start >/dev/null 2>&1
+```
+
+**必须先 `stop` 再删**：AGH 持有该文件的 fd，进程还活着时 `rm` 只解除目录项，块仍被
+占用，内存不会释放。
+
+为什么选 03:50：凌晨用网的人最少，且比周三 04:00 的整机重启早 10 分钟，先跑完再重启，
+不会撞车（周三那天即使白跑一次也无所谓）。
+
+**副作用**：每天 03:50 有约 5～15 秒 DNS 解析中断（AGH 是 dnsmasq 的上游）。翻墙与国内
+网页不受影响，只是新域名解析会慢一下。
+
+#### 改动 ⑤：可用内存持续过低时的专项取证
+
+原来的 Xray 兜底只在「Xray 超阈值 **且** 内存见底」时才动作。如果内存是被别的东西
+吃掉的（tmpfs / 内核 slab / 别的进程），它全程沉默 —— 这正是这次排查中暴露的盲区。
+
+v1.06 补上按可用内存**单独**触发的一条：
+
+| 参数 | 值 | 理由 |
+|---|---|---|
+| `AVAIL_HARD` | 25600 kB（25MB） | 比 Xray 那条 30MB 更严 |
+| `LOWMEM_N` | 3 次 | 连续 3 次 = 持续 15 分钟，滤掉流量突发造成的单次误报 |
+
+触发后往 `/root/health-alert.log` 写一块 `!! LOWMEM` 现场，额外包含：
+
+- **Xray 是否背锅**的判定（超没超 50MB 阈值，直接给结论）
+- `df -k /tmp` 与 `/tmp` 各目录占用 top10
+- AGH 工作目录 `ls -l /var/adguardhome/data/`
+- meminfo 关键项、进程 RSS top10
+
+**它只取证、不动作。** 低内存的成因还没穷举完（tmpfs 只是已确认的一个），贸然自动
+重启别的服务既可能掩盖真凶，也会误伤正在用网的人。
+
+顺带把 `shmem` / `tmpfs` 加进常规采样行 —— 这次排查为了拿到「/tmp 里到底谁在涨」
+不得不临时部署采集脚本，补上后趋势直接可见，下次不用再装东西。
+
 ### 它是怎么挂上去的
 
 由 `files/etc/uci-defaults/zz-hc5962-custom` **第 10 节**在首次开机时写入 cron：
@@ -993,3 +1088,29 @@ naive 为 `naive`、hysteria 为 `hysteria`、tuic 为 `tuic-client`、ss/ssr �
    wifi reload
    ```
 2. **Breed 版本**：极早期 Breed 对 HC5962 的 NAND 支持有差异。如果首刷失败，先确认 Breed 版本再排查。
+
+---
+
+## 十六、变更记录
+
+### 2026-09-10 · 内存盘 tmpfs 泄漏治理（AdGuard Home 查询日志）
+
+**背景**：排查「可用内存持续下降、9/6 与 9/8 各发生一次内存耗尽假死」。
+结论是**没有任何进程泄漏**——稳定期全部进程 RSS 斜率合计 −255 kB/h，anon 地板持平；
+**唯一只增不减的是 `/tmp` 这个内存盘**，因为 AdGuard Home 的工作目录 `/var/adguardhome`
+就在 tmpfs 里，查询日志每天长 5～13MB，而本机无 swap、tmpfs 页无法回收。
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| ① | `files/etc/AdGuardHome.yaml` | `querylog.interval` 由 `90`（90 天）改为 `24h` |
+| ① | `files/etc/uci-defaults/zz-hc5962-custom` | 新增**第 11 节**：cron `50 3 * * *` 停 AGH → 删 `querylog.json` → 启 AGH |
+| ⑤ | `files/etc/health_sample.sh` | v1.06：采样行新增 `shmem` / `tmpfs`；新增「可用内存连续 3 次 <25MB」专项取证块（`!! LOWMEM`，只取证不动作） |
+| — | `README.md` | 新增「十四·五」整节说明排查结论与改动理由；采样行示例与字段表同步更新 |
+
+**为什么 03:50**：凌晨用网最少；比周三 04:00 的整机重启早 10 分钟，先跑完再重启，不撞车。
+
+**已知副作用**：每天 03:50 约 5～15 秒 DNS 解析中断（AGH 是 dnsmasq 上游）；
+AGH 查询日志每天归零，只能看到当天 03:50 之后的记录。
+
+**待观察**：① 里 `interval: 24h` 是否真能让 AGH 自动回收，尚未实测验证——
+目前靠 ② 的每天删除来保证封顶。等跑几天看 `tmpfs=` 是否稳定在低位。

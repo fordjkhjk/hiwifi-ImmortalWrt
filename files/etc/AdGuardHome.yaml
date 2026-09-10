@@ -86,7 +86,11 @@ filtering:
 
 querylog:
   enabled: true
-  interval: 90
+  # 保留期 1 天（原为 90）。原因见 README「十四·五」：
+  # AGH 的工作目录 /var/adguardhome 就是 /tmp（内存盘），查询日志 querylog.json
+  # 实打实占 RAM；本机无 swap，tmpfs 页永远无法回收。实测日志每天长 5~13MB，
+  # 90 天不回收会吃光 244MB 内存。与每天 03:50 的日志归零任务配合使用。
+  interval: 24h
   anonymize_client_ip: false
 
 statistics:
