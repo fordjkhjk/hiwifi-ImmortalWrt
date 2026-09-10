@@ -204,42 +204,14 @@ if [ -x /etc/health_sample.sh ]; then
 fi
 
 # ------------------------------------------------------------------
-# 11. 每天 03:50 清空 AdGuard Home 查询日志
+# （原第 11 节「每天 03:50 清空 AGH 查询日志」已于 2026-09-10 撤销）
 #
-# 目的（2026-09-10 内存增长元凶排查的结论）：
-#   AGH 的工作目录是 /var/adguardhome，而 OpenWrt 上 /var 就是 /tmp——
-#   **整个 AGH 数据目录都在内存盘里**。其中查询日志 querylog.json 实测
-#   每天长 5~13MB（随 DNS 查询量浮动），而本机 244MB、无 swap，tmpfs 页
-#   既不能换出也不能回收，涨一兆就少一兆可用内存，重启前不会回落。
-#   按此速度，距每周三 04:00 重启还有 6 天时，可用内存会从 52MB 掉到
-#   23MB（低于 25MB 危险线），足以再次触发「内存耗尽 → UBI I/O 阻塞 →
-#   全机假死」。
+# 撤销原因：AGH 自己的轮转就够用。轮转是「旧文件改名成 .1、不删除」
+# （AGH 源码 querylog.go 注释：retention = 2×interval），interval 设 12h
+# 时稳态占用约 5.2MB，与每天删一次相当，且没有每天 5~15 秒的 DNS 中断。
 #
-# 三层防护，缺一不可：
-#   ① files/etc/AdGuardHome.yaml 里 querylog.interval 由 90 天改成 24h，
-#      让 AGH 自己按保留期回收（首选，但能否真的回收仍需实测确认）。
-#   ② 本任务每天把 querylog.json 删掉重来——不依赖 AGH 的回收行为，
-#      是唯一确定能封顶的手段。日志归零后 AGH 会重新创建。
-#   ③ 每周三 04:00 整机重启（第 9 节）兜底，把 /tmp 整体清空。
-#
-# 为什么是 03:50：
-#   凌晨上网的人最少；且比周三 04:00 的整机重启早 10 分钟，先跑完再重启，
-#   不会和重启撞车。周三那天即使白跑一次也无所谓——10 分钟后整机就重启了。
-#
-# 写法要点：
-#   必须先 stop 再删：AGH 持有该文件的 fd，进程还活着时 rm 只是解除目录项，
-#   磁盘块仍被占用，空间不会释放（df 看不出来，但内存照样被吃掉）。
-#   日志名不含 ssrplus.log（ssr+ 的 add_cron 会 sed 删掉含该字样的行）。
-#
-# 副作用：每天 03:50 有约 5~15 秒 DNS 解析中断（AGH 是 dnsmasq 的上游）。
-#         翻墙与国内网页不受影响，只是新域名解析会慢一下。
+# 别再加回来。另：AGH 只在启动时读 /etc/AdGuardHome.yaml，
+# 改 interval 后必须重启 AGH 才生效。
 # ------------------------------------------------------------------
-AGH_RESET='50 3 * * * /etc/init.d/AdGuardHome stop >/dev/null 2>&1; rm -f /var/adguardhome/data/querylog.json; /etc/init.d/AdGuardHome start >/dev/null 2>&1'
-mkdir -p /etc/crontabs
-if ! grep -qF 'AdGuardHome stop' /etc/crontabs/root 2>/dev/null; then
-    echo "$AGH_RESET" >> /etc/crontabs/root
-    chmod 600 /etc/crontabs/root
-    /etc/init.d/cron enable 2>/dev/null
-fi
 
 exit 0

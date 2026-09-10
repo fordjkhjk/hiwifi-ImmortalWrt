@@ -1000,30 +1000,42 @@ naive 为 `naive`、hysteria 为 `hysteria`、tuic 为 `tuic-client`、ss/ssr �
 外推：距下次周重启还有 6 天时，tmpfs 会到 ~42MB，可用内存从 52MB 掉到 **~23MB**
 （低于 25MB 危险线）—— 不加处理几乎必然再次触发「内存耗尽 → UBI I/O 阻塞 → 全机假死」。
 
-#### 改动 ①：查询日志保留期 90 天 → 1 天，并每天 03:50 归零
+#### 改动 ①：查询日志保留期 90 天 → 12 小时，交给 AGH 自己轮转
 
-三层，缺一不可：
+只改一个值：`files/etc/AdGuardHome.yaml` 的 `querylog.interval` 由 `90`（90 天）改为 **`12h`**。
 
-| 层 | 位置 | 作用 |
-|---|---|---|
-| ① | `files/etc/AdGuardHome.yaml` → `querylog.interval: 24h` | 让 AGH 自己按保留期回收（首选，能否真回收待实测确认） |
-| ② | `files/etc/uci-defaults/zz-hc5962-custom` 第 11 节，cron `50 3 * * *` | **不依赖 AGH 的回收行为**，每天删掉 `querylog.json` 重来，是唯一确定能封顶的手段 |
-| ③ | 第 9 节每周三 04:00 整机重启 | 兜底，把 `/tmp` 整体清空 |
+AGH 轮转的真实行为（v0.107.46 源码 `internal/querylog/querylogfile.go`）：
 
-cron 行：
+- `os.Rename(querylog.json → querylog.json.1)`，**只保留一个备份**，不存在 `.2/.3`，
+  下一次轮转时旧 `.1` 被直接覆盖
+- 源码 `querylog.go` 注释写得很明白：旧文件是 **renamed, NOT deleted**，
+  所以 **实际保留时长 = 2 × interval**，任一时刻内存里同时躺着 `querylog.json`
+  和 `querylog.json.1` 两份
+- 判据是「文件里**最早一条记录**的时间 + interval < 现在」，每小时检查一次
+  （`rotationCheckIvl = 1h`）
 
-```
-50 3 * * * /etc/init.d/AdGuardHome stop >/dev/null 2>&1; rm -f /var/adguardhome/data/querylog.json; /etc/init.d/AdGuardHome start >/dev/null 2>&1
-```
+所以稳态占用 ≈ 两个 interval 的量：
 
-**必须先 `stop` 再删**：AGH 持有该文件的 fd，进程还活着时 `rm` 只解除目录项，块仍被
-占用，内存不会释放。
+| interval | 内存峰值（json + .1） | 日志可回看 |
+|---|---:|---|
+| 24h | ~10.4 MB | 48 小时 |
+| **12h（采用）** | **~5.2 MB** | **24 小时** |
+| 8h | ~3.5 MB | 16 小时 |
 
-为什么选 03:50：凌晨用网的人最少，且比周三 04:00 的整机重启早 10 分钟，先跑完再重启，
-不会撞车（周三那天即使白跑一次也无所谓）。
+（按本机实测 5.2 MB/天、约 634 条/小时计算。）
 
-**副作用**：每天 03:50 有约 5～15 秒 DNS 解析中断（AGH 是 dnsmasq 的上游）。翻墙与国内
-网页不受影响，只是新域名解析会慢一下。
+> **曾经加过、后来撤销的方案**：2026-09-10 上午一度在 `zz-hc5962-custom` 里加过
+> 第 11 节 cron `50 3 * * *`「停 AGH → 删 `querylog.json` → 启 AGH」，当天即撤销。
+> 原因：AGH 自己轮转到 12h 就能把内存压在 ~5.2MB，与每天删一次效果相当，
+> 却没有每天 5～15 秒的 DNS 中断。而且两者互斥——每天删会让文件「最早记录」
+> 永远不到 12 小时，轮转反而永远不会触发。
+>
+> **如果将来要手工清空，必须先 `stop` 再删**：AGH 持有该文件的 fd，进程还活着时
+> `rm` 只解除目录项，块仍被占用，内存不会释放。
+
+⚠️ **改 interval 后必须重启 AGH 才生效**：AGH 只在启动时读 `/etc/AdGuardHome.yaml`，
+改了文件不重启等于没改。2026-09-10 就踩过一次——yaml 上午就改好了，进程却从两天前
+一直没重启过，配置始终没加载，「轮转没生效」差点被误判成「AGH 不会轮转」。
 
 #### 改动 ⑤：可用内存持续过低时的专项取证
 
@@ -1102,15 +1114,17 @@ v1.06 补上按可用内存**单独**触发的一条：
 
 | 改动 | 文件 | 内容 |
 |---|---|---|
-| ① | `files/etc/AdGuardHome.yaml` | `querylog.interval` 由 `90`（90 天）改为 `24h` |
-| ① | `files/etc/uci-defaults/zz-hc5962-custom` | 新增**第 11 节**：cron `50 3 * * *` 停 AGH → 删 `querylog.json` → 启 AGH |
+| ① | `files/etc/AdGuardHome.yaml` | `querylog.interval` 由 `90`（90 天）改为 **`12h`**（最终方案） |
+| ① | `files/etc/uci-defaults/zz-hc5962-custom` | 同日曾新增第 11 节 cron `50 3 * * *` 每天删 `querylog.json`，**当天撤销**，改为纯靠 AGH 轮转（保留说明注释，别再加回来） |
 | ⑤ | `files/etc/health_sample.sh` | v1.06：采样行新增 `shmem` / `tmpfs`；新增「可用内存连续 3 次 <25MB」专项取证块（`!! LOWMEM`，只取证不动作） |
 | — | `README.md` | 新增「十四·五」整节说明排查结论与改动理由；采样行示例与字段表同步更新 |
 
-**为什么 03:50**：凌晨用网最少；比周三 04:00 的整机重启早 10 分钟，先跑完再重启，不撞车。
+**采用 AGH 自轮转而不用 cron 删除的理由**：轮转到 12h 的稳态占用 ~5.2MB，与每天删一次
+相当，但省掉每天 03:50 那 5～15 秒的 DNS 中断；且两者互斥（每天删会让轮转永不触发）。
 
-**已知副作用**：每天 03:50 约 5～15 秒 DNS 解析中断（AGH 是 dnsmasq 上游）；
-AGH 查询日志每天归零，只能看到当天 03:50 之后的记录。
+**已知副作用**：AGH 查询日志可回看时长从「无上限（90 天）」缩短为 **24 小时**
+（保留期 = 2 × 12h）；除此之外没有其他影响。
 
-**待观察**：① 里 `interval: 24h` 是否真能让 AGH 自动回收，尚未实测验证——
-目前靠 ② 的每天删除来保证封顶。等跑几天看 `tmpfs=` 是否稳定在低位。
+**待观察**：`interval: 12h` 的轮转是否真的按预期发生。判据见「十四·五」——
+运行 12 小时后应出现 `querylog.json.1`，且 `querylog.json` 里最早记录不超过 12 小时；
+同时采样行的 `tmpfs=` 应稳在低位而不再每天 +5～13MB。

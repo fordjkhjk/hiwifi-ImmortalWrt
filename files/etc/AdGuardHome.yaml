@@ -86,11 +86,15 @@ filtering:
 
 querylog:
   enabled: true
-  # 保留期 1 天（原为 90）。原因见 README「十四·五」：
+  # 保留期 12 小时（原为 90 天）。原因见 README「十四·五」：
   # AGH 的工作目录 /var/adguardhome 就是 /tmp（内存盘），查询日志 querylog.json
   # 实打实占 RAM；本机无 swap，tmpfs 页永远无法回收。实测日志每天长 5~13MB，
-  # 90 天不回收会吃光 244MB 内存。与每天 03:50 的日志归零任务配合使用。
-  interval: 24h
+  # 90 天不回收会吃光 244MB 内存。
+  # 12h 的依据：AGH 轮转是「旧文件改名成 .1、不删除」（源码 querylog.go 注释：
+  # retention = 2×interval），任一时刻内存里同时躺着 querylog.json 和
+  # querylog.json.1 两份，所以稳态占用 ≈ 2 个 interval 的量 ≈ 5.2MB；
+  # 日志仍可回看 24 小时。改完必须重启 AGH 才生效（AGH 只在启动时读配置）。
+  interval: 12h
   anonymize_client_ip: false
 
 statistics:
