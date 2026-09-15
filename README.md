@@ -146,6 +146,7 @@ full 档位里的功能组件分两类：**DNS 链（AGH + mosdns）默认运行
 | ssr+ | 服务 → ShadowSocksR Plus+ | 未启动 | 装好即带，但节点、模式都要你配置后才真正生效（DNS 模式默认 0 = 本机 5335） |
 | ZeroTier | VPN → ZeroTier | 未启用 | uci `zerotier.global.enabled=0`，填 Network ID 并勾启用才连 |
 | vlmcsd (KMS) | 服务 → vlmcsd | 未启用 | uci `vlmcsd.config.enabled=0`，勾启用才监听 1688 |
+| Wake-on-LAN | 网络 → Wake-on-LAN | **无服务进程**（随用随点） | etherwake 按需发魔术包，没有常驻进程，无需开关；在界面填目标网卡 MAC 点「唤醒」即可 |
 
 > **默认运行怎么实现的**：AGH 走 `files/etc/uci-defaults/99-dns-setup` 首启脚本
 > 把 `AdGuardHome.AdGuardHome.enabled` 置 1（官方包 init 本来默认 0；注意 uci
@@ -449,6 +450,19 @@ MT7621 是 **mipsel** 架构，不少 Go/Rust 写的现代协议跑不了。逐�
 | `INCLUDE_NaiveProxy`  | `depends on !(arc\|\|armeb\|\|mips\|\|mips64\|\|...)` |
 | `INCLUDE_Kcptun`      | 依赖 `kcptun-client`，但 helloworld 源里**根本没有这个包**，开了必挂    |
 | `INCLUDE_MosDNS`      | 这是 ssr+ **捆绑**的 MosDNS（会 bind 5335 与 AGH 抢端口），不开；分流用独立包 `mosdns`（见十二·五章），两者是不同东西     |
+
+### ssr+ 运维须知（2026-09-11 故障后固化）
+
+- **自动切换已关**（`enable_switch=0`，2026-09-15 确认）：ssr-switch 判定备用节点可用只验
+  TCP 端口可达、不验真实翻墙可用性，2026-09-11 曾自动切到"端口通、实际不通"的
+  SG烈焰节点致全网断 8 分钟。关掉后主节点故障需手动切。
+- **前端显示 ≠ 实际节点**：ssr-switch 切节点只重启服务、**不写回 UCI**，LuCI 下拉框
+  永远显示默认节点。查真实在跑的节点看 `/var/log/ssrplus.log` 里的 `Switch to` 行。
+- **翻墙断的 1 分钟判据**：先看 `ssrplus.log` 有无 switch 记录（有 = 节点/切换问题），
+  再对照 `health-flash.log` 的 `net=` 流量（流量高 + 失败 = 拥塞；流量低 + 失败 = 节点问题）。
+- **每天 02:00 订阅更新会重启 ssr+**，隧道中断数十秒，属固有行为；翻墙瞬断先想到这个。
+- 缓解项：AGH 已开**乐观缓存**（缓存中已有的域名过期也先应答），隧道被挤兑时
+  已知域名照常解析；新域名仍会失败，根治需给国外 DoH 独立出口（未实施）。
 
 ---
 
@@ -847,7 +861,7 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | `anon` | 用户进程占用的内存 | 它涨 = 某个进程在泄漏 |
 | `sunrecl` | 内核不可回收内存 | 它涨 = 内核对象泄漏（conntrack / dentry 等） |
 | `shmem` | 共享内存 / tmpfs 总量 | 见下节；**本机无 swap，这一项涨了就下不来** |
-| `tmpfs` | `/tmp` 内存盘已用（kB） | 平时 12～15MB；**>25MB 说明查询日志没被清掉** |
+| `tmpfs` | `/tmp` 内存盘已用（kB） | 查询日志 12h 自轮转后稳态 **9～11MB**（6.9MB 基线 + ~5.2MB 日志）；持续每天 +5MB 以上说明轮转失效了 |
 | `u% / s%` | 用户态 / 内核态 CPU | 真的在计算时的占比 |
 | `io%` | **iowait，等 I/O 的时间占比** | 接近 0；高了说明卡在 I/O |
 | `Dproc` | D 状态（不可中断，通常卡 I/O）进程数 | **0** |
@@ -1125,6 +1139,7 @@ v1.06 补上按可用内存**单独**触发的一条：
 **已知副作用**：AGH 查询日志可回看时长从「无上限（90 天）」缩短为 **24 小时**
 （保留期 = 2 × 12h）；除此之外没有其他影响。
 
-**待观察**：`interval: 12h` 的轮转是否真的按预期发生。判据见「十四·五」——
-运行 12 小时后应出现 `querylog.json.1`，且 `querylog.json` 里最早记录不超过 12 小时；
-同时采样行的 `tmpfs=` 应稳在低位而不再每天 +5～13MB。
+**已验证（2026-09-11、09-12 连续两轮）**：轮转按预期发生——`querylog.json` 与
+`querylog.json.1` 并存且各 ≤3.5MB（实测 0.70 + 2.09MB）、json 最早记录恰 12.0h、
+轮转点 = `.1` 的 mtime；采样行 `tmpfs=` 已停止增长并稳定在 ~10MB。本观察项**正式关闭**，
+仅当 tmpfs 重新单调上涨或 AGH 异常时再按需检查。
