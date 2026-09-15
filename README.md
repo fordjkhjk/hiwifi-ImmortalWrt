@@ -133,6 +133,7 @@ ubiconcat1  0x2240000  93.25MB ┘
 | AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
 | ZeroTier     | `zerotier` + `luci-app-zerotier`       | **纯官方 packages / luci 源，不需要任何第三方源**。本体约 500KB，依赖 `kmod-tun`（TUN/TAP 虚拟网卡）                            |
 | vlmcsd (KMS) | `vlmcsd` + `luci-app-vlmcsd`           | **纯官方 packages / luci 源**。本体仅 23KB，用于局域网内 Windows / Office 的 KMS 激活                                  |
+| Wake-on-LAN | `luci-app-wol` + `etherwake`           | **纯官方 luci / packages 源**（2026-09-15 烘焙；实机此前已 opkg 手动装过同两款，烘焙后 sysupgrade 升级不再丢失）。etherwake 发魔术包唤醒局域网内支持 WoL 的设备，本体约 10KB，无后台服务 |
 | mosdns       | `mosdns`                              | **纯官方 packages 源**（`net/mosdns`，v5.3.3，Go 程序）。AGH 的下游分流器。注意 v5.3.3 不支持 geosite.dat 二进制，国内域名名单改用纯文本列表 `files/etc/mosdns/cn.txt` 走 `domain_set` 加载，见「十二·五」章 |
 
 ### 5. 插件的默认运行状态
@@ -200,7 +201,7 @@ files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dn
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
 files/etc/hotplug.d/net/60-ksmbd-zerotier  # ZT 网卡出现时重启 ksmbd（补绑 zt 接口，解决开机时序）
 files/etc/hc5962-upgrade.conf           # 升级仓库配置（分享固件给别人时改 REPO 一行）
-files/etc/health_sample.sh              # 健康采样 v1.05：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 且可用内存 <30MB 才自动重启（双条件，30 分钟冷却，进程名自动发现+排除名单）
+files/etc/health_sample.sh              # 健康采样 v1.06：每 5 分钟记负载/内存明细/CPU细分(iowait)/D状态进程数/Xray占用/DoH连接数/网桥速率，双写 /tmp（内存盘）+ /root（闪存，重启不丢）；异常时另存详细现场到 /root/health-alert.log；Xray 单进程 >50MB 且可用内存 <30MB 才自动重启（双条件，30 分钟冷却，进程名自动发现+排除名单）；可用内存连续 3 次 <25MB 时写 `!! LOWMEM` 专项取证（只取证不动作）
 files/usr/bin/fw-check-update           # 路由器端：检查 GitHub 有无新固件（支持 --json，网页用）
 files/usr/bin/fw-upgrade                # 路由器端：下载→校验→试刷→确认→刷入（支持 -y，网页用）
 package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系统 → 固件升级，仅 full 档位）
@@ -210,7 +211,7 @@ package/luci-app-hc5962-upgrade/        # 网页固件升级页（LuCI → 系�
 
 - LAN IP `192.168.112.200` / 掩码 `255.255.255.0`
 - 网关 `192.168.112.1`
-- DNS `114.114.114.114`
+- DNS `127.0.0.1`（路由器本机走自己的 DNS 链。2026-09-06 曾写 114.114.114.114，会把 99-dns-setup 置的 127.0.0.1 覆盖掉、且直连 114 会被污染，已修正）
 - `dhcp.lan.ignore=1` → 关闭 IPv4 DHCP
 - `ra=disabled` `dhcpv6=disabled` `ndp=disabled` + 停用 odhcpd → 关闭 IPv6
 - lan zone `masq='1'` → fw4 自动生成 fullcone srcnat，旁路由回程 NAT 直接生效（见第十一章）
@@ -645,7 +646,7 @@ mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`�
 |---|---|
 | `files/etc/mosdns/config.yaml` | v5.3.3 plugins-only 原生格式，监听 5353，定义国内/国外两条分流路径（已用官方 v5.3.3 二进制实跑验证通过） |
 | `files/etc/mosdns/cn.txt` | 国内域名名单（约 11 万条，源自 felixonmars/dnsmasq-china-list，每行一个域名） |
-| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置：上游只有一行 `127.0.0.1:5353`（mosdns）、4MB 缓存、关乐观缓存 |
+| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置：上游只有一行 `127.0.0.1:5353`（mosdns）、4MB 缓存、**开乐观缓存**（2026-09-15 起，隧道被挤兑时用过期缓存顶上，缓解国外 DNS 全断） |
 | `files/etc/uci-defaults/99-dns-setup` | 首启脚本：dnsmasq 转发 `127.0.0.1#5335` + noresolv、AGH 置 enabled、重启 dnsmasq |
 
 > 为什么不用 geosite.dat：**mosdns v5.3.3 已经移除了 `data_providers`/`servers`
@@ -894,6 +895,7 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 - 1 分钟负载 **> 5**
 - 可用内存 **< 30MB**
 - D 状态进程 **> 3**
+- 可用内存**连续 3 次 < 25MB**（v1.06 新增，`!! LOWMEM` 专项取证块：额外含 Xray 是否超阈值的判定、`df -k /tmp` 与 /tmp 占用 top10、`ls -l /var/adguardhome/data/`；**只取证、不动作**）
 
 现场包含：`/proc/meminfo` 全量、进程 RSS 前 15、D 状态进程清单、`top` 快照、conntrack 数、`dmesg` 尾部。  
 上限 150KB，超出保留最后 900 行。
@@ -1118,6 +1120,20 @@ v1.06 补上按可用内存**单独**触发的一条：
 ---
 
 ## 十六、变更记录
+
+### 2026-09-15 · 乐观缓存默认开 + Wake-on-LAN + README 校对
+
+**内容**（为第一次固件自动编译 + 路由器半自动升级测试做的准备）：
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| ① | `files/etc/AdGuardHome.yaml` | `cache_optimistic` 由 `false` 改 **`true`**（9/11 实机已开并验证：隧道被挤兑时缓存中已有的域名照常应答，把"国外 DNS 全断"降级为"个别新域名慢一下"） |
+| ② | `configs/config-full.config` | 新增 **Wake-on-LAN**：`luci-app-wol` + `luci-i18n-wol-zh-cn` + `etherwake`（官方源，无后台服务，随用随点）。**实机此前已 opkg 手动装过这两款**（etherwake 1.09-5、luci-app-wol git-25.294），sysupgrade 升级会清掉 opkg 手装插件——烘焙进固件正是为了让它升级后不丢 |
+| ③ | `README.md` | 校对 5 处过时/错误描述：健康采样 v1.05→v1.06、LAN DNS 114→127.0.0.1、tmpfs 判据改 12h 轮转稳态、异常取证条件补 `!! LOWMEM`、"待观察"改"已验证"；补 AGH 维持 0.107.46 决策与 ssr+ 运维须知 |
+| — | iStore | 核对确认新库从未包含 iStore（configs 零匹配），维持现状；下次 sysupgrade 升级后 iStore 自然消失 |
+
+**乐观缓存的效果边界**（勿夸大）：只救"缓存中已存在但已过期"的域名（过期条目以
+10s TTL 应答、后台异步刷新）；从未解析过的新域名上游超时依然失败。
 
 ### 2026-09-10 · 内存盘 tmpfs 泄漏治理（AdGuard Home 查询日志）
 
