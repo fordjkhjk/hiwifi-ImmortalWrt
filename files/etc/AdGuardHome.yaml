@@ -99,5 +99,12 @@ querylog:
 
 statistics:
   enabled: true
-  interval: 1
+  # 注意必须是带单位的时长（"1" 会被 AGH 0.107.46 拒绝：
+  # "unmarshaling duration: missing unit in duration" → AGH 起不来）。
+  interval: 24h
+
+# 必须有：缺失时 AGH 启动会走 schema 迁移并改写本文件（改写产物自带
+# bootstrap_dns "- []" 语法错误，AGH 二次崩溃）。9/18 全屋断翻墙事故的
+# 两个死因之一。值须与 AGH 0.107.46 的 schema 匹配。
+schema_version: 28
   ignored: []
