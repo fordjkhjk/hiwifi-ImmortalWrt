@@ -817,7 +817,8 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | 烘焙进固件的插件（ssr+、AdGuard Home、ZeroTier、vlmcsd 等） | ✅ 升级到新版本 |
 | LuCI 里的设置、无线密码、ssr+ 节点配置 | ✅ 保留 |
 | iStore / opkg 手动装的插件 | ❌ 清掉，需重装（2026-09 起固件已不带 iStore：官方源砍了 mipsel_24kc 架构 feed，iStore 在本机装不了任何插件，纯占体积） |
-| 烘焙配置（AdGuardHome.yaml、mosdns、ksmbd、lan masq 等）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
+| 烘焙配置（mosdns、ksmbd、lan masq 等）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
+| **`/etc/AdGuardHome.yaml`** | ⚠️ **2026-09-18 实测不保留**（它不在 conffiles/keep.d 里）。已双保险堵住：①实机与烘焙 UCI 均设 `upprotect=/etc/AdGuardHome.yaml`（写进 keep.d，sysupgrade 保留）；②烘焙 yaml 本身修复为可直接启动（见变更记录 9/18 条目）。9/18 之前刷机此文件会被清掉 |
 
 「长期必用烘焙、偶尔尝鲜走 opkg」分层策略的落点。
 
@@ -1120,6 +1121,38 @@ v1.06 补上按可用内存**单独**触发的一条：
 ---
 
 ## 十六、变更记录
+
+### 2026-09-18 · 首次在线升级实战：两个 bug（升级工具 nohup + AGH 配置丢失与烘焙 yaml 失效）
+
+刷入 full-2026.09.15-1543 后实测两次翻车，均已修复并推 GitHub。备查要点如下。
+
+**Bug ①：网页一键升级点了没反应（升级工具自身）**
+
+| 项 | 内容 |
+|---|---|
+| 现象 | 网页点「开始升级」后毫无动静，路由器不重启、不下载；`/tmp/fw-upgrade.log` 只有一行 `hc5962-upgrade: line 23: nohup: not found` |
+| 根因 | rpcd 后端脚本用 `nohup` 往后台拉起刷机程序，**本机 busybox 没有 nohup**（该限制此前已知，写 v3 时踩了自己记过的坑）。第 23 行瞬间报错退出，下载/校验/刷机均未开始 |
+| 修复 | 删掉 `nohup`（后台 + 重定向足够，rpcd 每次调用现读脚本）。commit `fb4c3c7` |
+| 注意 | 1543 固件编译早于该修复，**其内烘焙的升级工具仍带 nohup**——用 1543 的网页升级前需先热修或改用 SSH `fw-upgrade`；从下一版固件起自带修复 |
+| 附注 | 32MB 固件的 sha256 在 MIPS 上要算几十秒，期间页面日志一行不动，像卡死但不是——校验/试刷/刷入全程约 5-7 分钟 |
+
+**Bug ②：升级后 AGH 起不来 → 全屋断翻墙（丢失配置 + 烘焙 yaml 自带两处 bug）**
+
+死因链四环，每环有实证：
+
+1. `/etc/AdGuardHome.yaml` **不在 sysupgrade 保留清单**（该插件的保留机制 `upprotect` 未配置）→ 升级把调教好的配置清掉；
+2. 露出的烘焙 yaml（`files/etc/AdGuardHome.yaml`）**本身有两处 bug**：`statistics.interval: 1` 缺时间单位（AGH 报 `missing unit in duration "1"`）、缺 `schema_version` 字段——9/10 写这份文件时埋的，此前实机一直用现成配置，从未真正读到过它；
+3. 缺 `schema_version` 触发 AGH 的 schema 迁移**改写配置文件**，改写产物自带 `bootstrap_dns: - []`（列表嵌空列表）语法错误 → AGH 连续崩溃退出（开机日志 PID 3888 报 duration 错、PID 4250 报 line 17 unmarshal 错）；
+4. dnsmasq(53) → AGH(5335，死) → mosdns(5353) 链断 → 本地 DNS 全灭 → Xray 解析不了节点域名 → 隧道建不起来 → 全屋不能翻墙。**ssr+ 的 40+ 节点配置全程完好，没丢。**
+
+排查中洗清的嫌疑人：大小写两个 init 脚本全文、uci-defaults 脚本、/usr/share/AdGuardHome 附属脚本、模板文件——都没有拷贝配置的代码，改写者是 AGH 自己的迁移逻辑。
+
+修复（commit `4835dff` + `c4de2d7`）：
+
+- 实机：修 yaml（`bootstrap_dns: []`、querylog 12h）+ 设 `upprotect=/etc/AdGuardHome.yaml`（写进 keep.d，升级不再清它）；
+- 仓库：新增 `files/etc/config/AdGuardHome`（UCI 对齐实机，**upprotect 烘焙进去**，下一版固件起升级不丢配置）；烘焙 yaml 修为 `interval: 24h` + `schema_version: 28`（全新刷机不走升级也能直接启动）。
+
+遗留提醒：升级后 AGH 回到包默认行为，safe_search 全开、过滤规则与管理员账号为空，需进 `:3000` 界面重新调回。
 
 ### 2026-09-15 · 乐观缓存默认开 + Wake-on-LAN + README 校对
 
