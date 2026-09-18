@@ -1,0 +1,22 @@
+# AdGuardHome UCI 配置（luci-app-adguardhome 用）
+#
+# 与 2026-09-18 实机 /etc/config/AdGuardHome 对齐，另加一项关键修复：
+#   upprotect —— 该插件的 sysupgrade 保留机制。init 启动时会把它写进
+#   /lib/upgrade/keep.d/luci-app-adguardhome，sysupgrade 升级时保留此文件。
+#   9/18 升级 1543 时因 upprotect 为空，/etc/AdGuardHome.yaml 被 sysupgrade
+#   清掉，开机又被包默认配置顶替（内含 bootstrap_dns: "- []" 语法错误），
+#   AGH 起不来 → 本地 DNS 全灭 → Xray 解析不了节点域名 → 全屋断翻墙。
+#   加 upprotect 后升级不再丢配置，此事故不会复发。
+#
+# 注意：AGH 只在启动时读 yaml；改 /etc/AdGuardHome.yaml 后必须重启 AGH。
+
+config AdGuardHome 'AdGuardHome'
+	option enabled '1'
+	option httpport '3000'
+	option redirect 'none'
+	option configpath '/etc/AdGuardHome.yaml'
+	option workdir '/var/adguardhome'
+	option logfile '/tmp/AdGuardHome.log'
+	option verbose '0'
+	option binpath '/usr/bin/AdGuardHome'
+	option upprotect '/etc/AdGuardHome.yaml'
