@@ -20,7 +20,9 @@ case "$1" in
 				/usr/bin/fw-check-update --json 2>/dev/null
 				;;
 			start)
-				nohup /usr/bin/fw-upgrade -y >/tmp/fw-upgrade.log 2>&1 &
+				# 注意: 本机 busybox 无 nohup(9/18 实测踩坑)。脚本由 rpcd fork,
+				# 后台 + 重定向即脱离,子进程在脚本退出后被 init 收养,无需 nohup。
+				/usr/bin/fw-upgrade -y >/tmp/fw-upgrade.log 2>&1 &
 				echo '{ "ok": true }'
 				;;
 			log)
