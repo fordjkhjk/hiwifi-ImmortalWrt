@@ -26,7 +26,14 @@ case "$1" in
 				echo '{ "ok": true }'
 				;;
 			log)
-				if pgrep -f '^fw-upgrade -y' >/dev/null 2>&1; then
+				# 9/24 修: busybox 的 pgrep -f 匹配串以"进程名(comm)"开头,而不是
+				# cmdline 首字段。/usr/bin/fw-upgrade 是 #!/bin/sh 脚本,跑起来后
+				# 匹配串形如 "fw-upgrade /bin/sh /usr/bin/fw-upgrade -y",
+				# 故 '^fw-upgrade -y' 永远失配 → running 恒 false → 前端 poll
+				# 第一次(2 秒后)就断定"升级结束",日志里还没有 [6/6] → 误报
+				# "失败"并停止轮询(刷机其实照常继续)。必须去掉 ' -y'。
+				# 实机同名同构实测: '^fw-upgrade -y'=NOMATCH, '^fw-upgrade'=MATCH。
+				if pgrep -f '^fw-upgrade' >/dev/null 2>&1; then
 					R=true
 				else
 					R=false
