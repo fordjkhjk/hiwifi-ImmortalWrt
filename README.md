@@ -835,7 +835,7 @@ GitHub 对公开仓库有「60 天无 repository activity 自动禁用定时任�
 | LuCI 里的设置、无线密码、ssr+ 节点配置 | ✅ 保留 |
 | iStore / opkg 手动装的插件 | ❌ 清掉，需重装（2026-09 起固件已不带 iStore：官方源砍了 mipsel_24kc 架构 feed，iStore 在本机装不了任何插件，纯占体积） |
 | 烘焙配置（mosdns、ksmbd、lan masq 等）及 uci-defaults 已生效的定制 | ✅ 保留（烘焙 + conffiles 机制） |
-| **`/etc/AdGuardHome.yaml`** | ⚠️ **2026-09-18 实测不保留**（它不在 conffiles/keep.d 里）。已双保险堵住：①实机与烘焙 UCI 均设 `upprotect=/etc/AdGuardHome.yaml`（写进 keep.d，sysupgrade 保留）；②烘焙 yaml 本身修复为可直接启动（见变更记录 9/18 与 9/24 条目——9/24 又修掉一处被顶错位置、导致整份文件成为非法 YAML 的 `ignored: []`）。9/18 之前刷机此文件会被清掉 |
+| **`/etc/AdGuardHome.yaml`** | ⚠️ **2026-09-18 实测不保留**（它不在 conffiles/keep.d 里）。已双保险堵住：①实机与烘焙 UCI 均设 `upprotect=/etc/AdGuardHome.yaml`（写进 keep.d，sysupgrade 保留）；②烘焙 yaml 本身重写为 AGH 能直接读取的形态。注意②经过两轮才修好：9/18 只修了 YAML 语法（`interval` 单位、补 `schema_version`），**9/24 才发现 AGH 仍读不了它**（字段类型不符 + 缺段），遂以 AGH 自己写出的配置为骨架整份重写，并经 `AdGuardHome --check-config` 验证 `exit=0`。详见变更记录 9/18 与 9/24 条目。9/18 之前刷机此文件会被清掉 |
 
 「长期必用烘焙、偶尔尝鲜走 opkg」分层策略的落点。
 
@@ -1139,7 +1139,7 @@ v1.06 补上按可用内存**单独**触发的一条：
 
 ## 十六、变更记录
 
-### 2026-09-24 · 编译前体检再揪两个 bug（升级状态判定恒假 + 烘焙 yaml 非法结构）
+### 2026-09-24 · 编译前体检再揪三个 bug（升级状态判定恒假 + 烘焙 yaml 非法结构 + 烘焙 yaml 与 AGH schema 不同构）
 
 再一次「准备编译新固件 → 然后走网页升级」之前做例行复查，又揪出两个必须修的问题（commit `dd70210`）。这两个都是**隐蔽型**：不报错、不影响日常使用，只在特定路径上炸。
 
@@ -1167,16 +1167,33 @@ v1.06 补上按可用内存**单独**触发的一条：
 | 影响面 | ⚠️ **走 sysupgrade 升级不受影响**（upprotect 生效，保留的是路由器上那份合法配置）；但**全新刷机 / 恢复出厂 / 把固件分享给别人**会直接读到它 → AGH 起不来 → 9/18 全屋断网事故重演。属于必须堵死的隐患 |
 | 教训 | 「同一份文件在两条路径上被读，只测了一条」—— 9/18 只验证了 sysupgrade 路径，没有验证「新刷/出厂」路径。凡改烘焙配置，两条路径都要想一遍 |
 
+**Bug ⑤：烘焙 yaml 即使 YAML 合法，AGH 也读不进去（字段类型不符 + 缺段）**
+
+**本次体检最有价值的发现**，也说明 9/18 那次修复只修了表皮。
+
+| 项 | 内容 |
+|---|---|
+| 怎么发现的 | 不再靠「我看着合法」——把烘焙 yaml 放到路由器 `/tmp`，用 **AGH 本体**校验：`/usr/bin/AdGuardHome --check-config -c /tmp/xxx.yaml` |
+| 结果 | `exit=1`：`line 49: cannot unmarshal !!bool 'false' into dnsforward.EDNSClientSubnet`、`line 77: cannot unmarshal !!seq into filtering.BlockedServices` |
+| 根因 | 0.107.46 里 `edns_client_subnet`、`blocked_services` 是**结构体**，烘焙文件却写成标量 `false` 和空序列 `[]`；另有一个凭空捏造的 `blocked_services_schedule` 独立键（它本该是 `blocked_services.schedule`）。此外**整整缺了 8 个段**：`tls` / `filters` / `whitelist_filters` / `user_rules` / `dhcp` / `clients` / `log` / `os`，以及一批子键 |
+| 为什么一直没暴露 | 这三条路径全靠「路由器上那份 AGH 自己写的合法配置」兜着：日常运行读 `/etc` 那份、sysupgrade 有 upprotect 保留。**烘焙文件从未被 AGH 成功读取过一次**——9/18 之前读不到（配置没丢时它是被盖住的），9/18 读到了却起不来 |
+| 后果 | 全新刷机 / 恢复出厂 / 把固件分享给别人 → AGH 起不来 → 本地 DNS 全灭 → 全屋断翻墙，与 9/18 完全同款 |
+| 修复 | 以「路由器上 AGH 自己写出的配置」为**结构骨架**重写整份烘焙 yaml（键顺序、层级、类型全部同构），只把值改成设计要的：单上游 `127.0.0.1:5353`（mosdns）、4MB 缓存、乐观缓存开、`aaaa_disabled`、querylog 12h、statistics 24h、安全搜索关、`users` 空、订阅不烘焙。commit `42277c8` |
+| 验证 | `--check-config` → **`exit=0` + `configuration file is ok`**，且**校验后文件 md5 未变**（说明不再触发 schema 迁移）—— 这是「新刷后 AGH 一定能起来」的最强证据 |
+| 教训 | 凡改烘焙配置，**必须让目标程序自己校验一遍**。「YAML 能解析」≠「程序能读得进去」，中间还隔着 schema 这一层；9/18 就是只验到「YAML 语法」这一层就收工了 |
+
 **本次升级（编译后首次刷）的注意事项**
 
-- 本次编译出的固件**自带这两处修复**，刷完后网页升级页的进度显示会正常（不会再谎报失败）。
+- 本次编译出的固件**自带这三处修复**，刷完后网页升级页的进度显示会正常（不会再谎报失败），AGH 配置也经 AGH 本体验证可读。
 - 但**这次升级动作本身用的是路由器上现有的旧 rpcd**（仍是恒假版本）：若不先热部署，页面依然会在 2 秒后显示失败。**已热部署到实机**（`/usr/libexec/rpcd/hc5962-upgrade`，与 9/18 那次同样的手法）——热部署是 overlay 文件，下次 sysupgrade 后由镜像内版本接管，版本一致，无冲突。
 - 前端与后端日志标记契约同时复核通过：`fw-upgrade` 打印 `[1/6]`~`[6/6]` → rpcd 透传 `/tmp/fw-upgrade.log` → `upgrade3.js` 映射 `[1/6]`→步1、`[3/6]`→步2、`[6/6]`→步3。
+- 本次升级**不会**动到 AGH 配置：`upprotect` 生效，sysupgrade 保留路由器上那份（AGH 自己写的、合法的）`/etc/AdGuardHome.yaml`。
 
-**复用工具**：本次体检用到的两个只读脚本留在工作区（非仓库内），每次编译前可直接跑：
+**复用工具**：本次体检用到的三个只读脚本留在工作区（非仓库内），每次编译前可直接跑：
 
 - `gh_check.py` —— 核对上游源更新与补丁落点（含 ssr+ 两个补丁是否仍能命中）
-- `yaml_check.py` —— 校验所有烘焙 YAML/JSON 可解析性（**Bug ④ 就是它抓出来的**，9/18 事故后新建）
+- `yaml_check.py` —— 校验所有烘焙 YAML/JSON 的**语法**可解析性（**Bug ④ 就是它抓出来的**，9/18 事故后新建）
+- `agh_verify.py` —— 把烘焙 AGH yaml 传到路由器 `/tmp`，调 **AGH 本体** `--check-config` 验证**语义**可读性（**Bug ⑤ 就是它抓出来的**）。改任何 AGH 配置后都该跑一次
 
 ### 2026-09-18 · 首次在线升级实战：两个 bug（升级工具 nohup + AGH 配置丢失与烘焙 yaml 失效）
 
@@ -1206,7 +1223,9 @@ v1.06 补上按可用内存**单独**触发的一条：
 修复（commit `4835dff` + `c4de2d7`）：
 
 - 实机：修 yaml（`bootstrap_dns: []`、querylog 12h）+ 设 `upprotect=/etc/AdGuardHome.yaml`（写进 keep.d，升级不再清它）；
-- 仓库：新增 `files/etc/config/AdGuardHome`（UCI 对齐实机，**upprotect 烘焙进去**，下一版固件起升级不丢配置）；烘焙 yaml 修为 `interval: 24h` + `schema_version: 28`（全新刷机不走升级也能直接启动）。
+- 仓库：新增 `files/etc/config/AdGuardHome`（UCI 对齐实机，**upprotect 烘焙进去**，下一版固件起升级不丢配置）；烘焙 yaml 修为 `interval: 24h` + `schema_version: 28`。
+
+  > ⚠️ **此修复并不彻底**（2026-09-24 复查发现）：它只解决了「单位缺失」和「缺 schema_version」，文件里还有**两处字段类型错误 + 8 个缺失段**，AGH 本体依然读不进去（`--check-config` 报 `exit=1`）。也就是说，此处之后全新刷机仍会重演 AGH 起不来。真正修好是在 9/24 —— 见该日条目 **Bug ⑤**。教训：**「YAML 语法合法」不等于「AGH 能读」**，中间还隔着 schema 这一层。
 
 遗留提醒：升级后 AGH 回到包默认行为，safe_search 全开、过滤规则与管理员账号为空，需进 `:3000` 界面重新调回。
 
