@@ -1,36 +1,60 @@
-# AdGuard Home 烘焙配置（全新刷机时生效）
+# AdGuard Home 烘焙配置（全新刷机 / 恢复出厂时由 AGH 读取）
 #
 # 在 DNS 链路里的角色：总管家 —— 广告过滤 + 缓存 + 把查询转给 mosdns。
 #   dnsmasq:53 → AdGuard Home:5335 → mosdns:5353 → 国内外分流
 #
-# 关键项（与商定一致）：
+# ★ 本文件的结构必须与 AGH 0.107.46「自己写出来的」配置完全同构 ★
+#   9/18、9/24 两次事故全部源于本文件与 AGH 的 schema 不一致：
+#     ① statistics.interval 缺单位（"1" 应为 "24h"）          → 9/18 修
+#     ② 缺 schema_version（触发 schema 迁移，改写产物自带
+#        bootstrap_dns "- []" 语法错误，二次崩溃）             → 9/18 修
+#     ③ ignored: [] 被顶到 schema_version 下面，整份文件成
+#        非法 YAML（mapping values are not allowed here）      → 9/24 修
+#     ④ edns_client_subnet 写成 bool、blocked_services 写成
+#        空序列（0.107.46 期望的是结构体）                      → 9/24 修
+#        另外补齐了原先缺失的 tls/filters/dhcp/clients/log/os 等段
+#
+# 验证方式（最强证据 —— 不是「我看着对」，而是 AGH 自己认不认）：
+#   把它放到路由器 /tmp，跑
+#     /usr/bin/AdGuardHome --check-config -c /tmp/xxx.yaml
+#   必须 exit=0、无 any unmarshal error。改本文件后务必这样验一遍。
+#
+# 关键设计项（与商定一致）：
 #   - 上游 DNS：只一行 127.0.0.1:5353（mosdns），不做并行多上游
 #   - 请求方式：负载均衡（单上游时语义干净）
 #   - 速度限制：0（不限，避免误伤浏览器并发查询）
 #   - 禁用 IPv6 解析：开（家里无 IPv6）
-#   - 缓存：4MB（保持现状）
-#   - 乐观缓存：开（2026-09-15 起，减少上游失效时的解析失败）
-#   - 覆盖 TTL：0/0（保持现状）
-#
-# 注意：users 留空 → 首次打开 web 界面（http://<路由器IP>:3000）会进入
-# 设置向导，让你设置管理员账号密码，之后即按本配置运行。
-# 广告过滤的订阅规则列表不在此烘焙，首次进界面后自行添加（与旧库一致）。
+#   - 缓存：4MB；乐观缓存：开（2026-09-15 起）
+#   - querylog 12h / statistics 24h（内存盘 tmpfs 治理，见 README「十四·五」）
+#   - 安全搜索：关（不强制）
+#   - users 留空 → 首次打开 http://<路由器IP>:3000 会进设置向导
+#   - 广告过滤订阅不在此烘焙，首次进界面后自行添加（与旧库一致）
 
 http:
+  pprof:
+    port: 6060
+    enabled: false
   address: 0.0.0.0:3000
   session_ttl: 720h
-
 users: []
-
+auth_attempts: 5
+block_auth_min: 15
+http_proxy: ""
+language: ""
+theme: auto
 dns:
   bind_hosts:
     - 0.0.0.0
   port: 5335
+  anonymize_client_ip: false
   ratelimit: 0
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
+  ratelimit_whitelist: []
   refuse_any: true
   upstream_dns:
     - 127.0.0.1:5353
-  upstream_dns_file: ''
+  upstream_dns_file: ""
   bootstrap_dns: []
   fallback_dns: []
   upstream_mode: load_balance
@@ -46,11 +70,16 @@ dns:
   bogus_nxdomain: []
   aaaa_disabled: true
   enable_dnssec: false
-  edns_client_subnet: false
+  # 0.107.46 期望的是结构体（EDNSClientSubnet），写 false 会
+  # "cannot unmarshal !!bool into dnsforward.EDNSClientSubnet"。
+  edns_client_subnet:
+    custom_ip: ""
+    enabled: false
+    use_custom: false
   max_goroutines: 300
   handle_ddr: true
   ipset: []
-  ipset_file: ''
+  ipset_file: ""
   bootstrap_prefer_ipv6: false
   upstream_timeout: 10s
   private_networks: []
@@ -62,30 +91,24 @@ dns:
   use_http3_upstreams: false
   serve_plain_dns: true
   hostsfile_enabled: true
-
-filtering:
-  protection_enabled: true
-  filtering_enabled: true
-  parental_enabled: false
-  safebrowsing_enabled: false
-  safe_search:
-    enabled: false
-  blocking_mode: default
-  blocked_response_ttl: 10
-  filters_update_interval: 24
-  rewrites: []
-  blocked_services: []
-  blocked_services_schedule:
-    time_zone: UTC
-  safebrowsing_block_host: standard-block.dns.adguard.com
-  parental_block_host: family-block.dns.adguard.com
-  safebrowsing_cache_size: 1048576
-  safesearch_cache_size: 1048576
-  parental_cache_size: 1048576
-  cache_time: 30
-
+tls:
+  enabled: false
+  server_name: ""
+  force_https: false
+  port_https: 443
+  port_dns_over_tls: 853
+  port_dns_over_quic: 853
+  port_dnscrypt: 0
+  dnscrypt_config_file: ""
+  allow_unencrypted_doh: false
+  certificate_chain: ""
+  private_key: ""
+  certificate_path: ""
+  private_key_path: ""
+  strict_sni_check: false
 querylog:
-  enabled: true
+  dir_path: ""
+  ignored: []
   # 保留期 12 小时（原为 90 天）。原因见 README「十四·五」：
   # AGH 的工作目录 /var/adguardhome 就是 /tmp（内存盘），查询日志 querylog.json
   # 实打实占 RAM；本机无 swap，tmpfs 页永远无法回收。实测日志每天长 5~13MB，
@@ -95,19 +118,91 @@ querylog:
   # querylog.json.1 两份，所以稳态占用 ≈ 2 个 interval 的量 ≈ 5.2MB；
   # 日志仍可回看 24 小时。改完必须重启 AGH 才生效（AGH 只在启动时读配置）。
   interval: 12h
-  anonymize_client_ip: false
-
-statistics:
+  size_memory: 1000
   enabled: true
-  # 注意必须是带单位的时长（"1" 会被 AGH 0.107.46 拒绝：
-  # "unmarshaling duration: missing unit in duration" → AGH 起不来）。
-  interval: 24h
-  # 统计忽略列表。9/24 修：本行原属本段，c4de2d7 插入上面的 schema_version
-  # 时把注释插到了它前面，导致它被顶成 "schema_version: 28" 下的缩进子键，
-  # 成了非法 YAML（pyyaml: mapping values are not allowed here）。
-  # 依据：路由器上 AGH 自己写出的 yaml 中，本键确实位于 statistics: 段下。
+  file_enabled: true
+statistics:
+  dir_path: ""
+  # 统计忽略列表（AGH 自己写出的 yaml 里本键位于 statistics: 段下）。
   ignored: []
-
+  # 必须带单位（"1" 会被拒：unmarshaling duration: missing unit in duration）。
+  interval: 24h
+  enabled: true
+# 订阅列表不烘焙（首次进 :3000 界面后自行添加）
+filters: []
+whitelist_filters: []
+user_rules: []
+dhcp:
+  enabled: false
+  interface_name: ""
+  local_domain_name: lan
+  dhcpv4:
+    gateway_ip: ""
+    subnet_mask: ""
+    range_start: ""
+    range_end: ""
+    lease_duration: 86400
+    icmp_timeout_msec: 1000
+    options: []
+  dhcpv6:
+    range_start: ""
+    lease_duration: 86400
+    ra_slaac_only: false
+    ra_allow_slaac: false
+filtering:
+  blocking_ipv4: ""
+  blocking_ipv6: ""
+  # 0.107.46 期望的是结构体（BlockedServices，含 schedule 与 ids），
+  # 写空序列会 "cannot unmarshal !!seq into filtering.BlockedServices"。
+  # 注意 schedule 是本结构体的子键，不是 filtering 下的独立键。
+  blocked_services:
+    schedule:
+      time_zone: UTC
+    ids: []
+  protection_disabled_until: null
+  # 安全搜索：关（不强制）。子键全列，与 AGH 写出的结构保持同构。
+  safe_search:
+    enabled: false
+    bing: false
+    duckduckgo: false
+    google: false
+    pixabay: false
+    yandex: false
+    youtube: false
+  blocking_mode: default
+  parental_block_host: family-block.dns.adguard.com
+  safebrowsing_block_host: standard-block.dns.adguard.com
+  rewrites: []
+  safebrowsing_cache_size: 1048576
+  safesearch_cache_size: 1048576
+  parental_cache_size: 1048576
+  cache_time: 30
+  filters_update_interval: 24
+  blocked_response_ttl: 10
+  filtering_enabled: true
+  parental_enabled: false
+  safebrowsing_enabled: false
+  protection_enabled: true
+clients:
+  runtime_sources:
+    whois: true
+    arp: true
+    rdns: false
+    dhcp: true
+    hosts: true
+  persistent: []
+log:
+  file: ""
+  max_backups: 0
+  max_size: 100
+  max_age: 3
+  compress: false
+  local_time: false
+  verbose: false
+os:
+  group: ""
+  user: ""
+  rlimit_nofile: 0
 # 必须有：缺失时 AGH 启动会走 schema 迁移并改写本文件（改写产物自带
 # bootstrap_dns "- []" 语法错误，AGH 二次崩溃）。9/18 全屋断翻墙事故的
 # 两个死因之一。值须与 AGH 0.107.46 的 schema 匹配。必须是文件顶层收尾，
