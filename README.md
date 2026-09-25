@@ -215,10 +215,13 @@ feeds.conf.default                      # 4 个官方源 + helloworld（AGH 界�
 configs/config-minimal.config           # 档位 A：精简版 ~11MB，Breed 首刷（出 factory+sysupgrade）
 configs/config-full.config               # 档位 B：完整版 factory 31.5MB / sysupgrade 28.5MB（首编实测）
 diy-part1.sh                            # feeds 兜底校验
-diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + full 档位摘除 factory.bin
+diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + ssr+ 两个补丁 + 关 ssr-rules 守护进程 + full 档位摘除 factory.bin
 files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/lan zone masq/LuCI 检查更新按钮
 files/etc/uci-defaults/99-dns-setup    # 首启固化 DNS 链：dnsmasq 转发 5335 + 启用 AGH（见第五、七、十二·五章）
-files/etc/AdGuardHome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、1MB 缓存、schema 34 / AGH 0.107.78）
+files/etc/AdGuardHome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、1MB 缓存、查询日志 6h、schema 34 / AGH 0.107.78）
+files/etc/init.d/adguardhome            # 空壳覆盖官方 adguardhome 包的 init（见第十二·六章）
+files/etc/init.d/agh-filters            # 开机把黑名单目录 bind mount 到闪存（见第十二·六章）
+files/lib/upgrade/keep.d/agh-filters    # 声明 /etc/AdGuardHome-filters 随 sysupgrade 保留
 files/etc/mosdns/config.yaml           # mosdns v5.3.3 分流配置（监听 5353，国内外分流，见十二·五章）
 files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dnsmasq-china-list 转换）
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
@@ -669,7 +672,7 @@ mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`�
 |---|---|
 | `files/etc/mosdns/config.yaml` | v5.3.3 plugins-only 原生格式，监听 5353，定义国内/国外两条分流路径（已用官方 v5.3.3 二进制实跑验证通过） |
 | `files/etc/mosdns/cn.txt` | 国内域名名单（约 11 万条，源自 felixonmars/dnsmasq-china-list，每行一个域名） |
-| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置（schema 34 / AGH 0.107.78）：上游只有一行 `127.0.0.1:5353`（mosdns）、**1MB 缓存**（2026-09-25 由 4MB 降档，上下有 dnsmasq 8000 条 / mosdns 4096 条兜底）、**开乐观缓存**（2026-09-15 起，隧道被挤兑时用过期缓存顶上，缓解国外 DNS 全断） |
+| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置（schema 34 / AGH 0.107.78）：上游只有一行 `127.0.0.1:5353`（mosdns）、**1MB 缓存**（2026-09-25 由 4MB 降档，上下有 dnsmasq 8000 条 / mosdns 4096 条兜底）、**查询日志 6h**（2026-09-25 由 12h 缩短，稳态占用从 ~2.6MB 降到 ~1.3MB）、**安全搜索全关**、**开乐观缓存**（2026-09-15 起，隧道被挤兑时用过期缓存顶上，缓解国外 DNS 全断） |
 | `files/etc/uci-defaults/99-dns-setup` | 首启脚本：dnsmasq 转发 `127.0.0.1#5335` + noresolv、AGH 置 enabled、重启 dnsmasq |
 
 > 为什么不用 geosite.dat：**mosdns v5.3.3 已经移除了 `data_providers`/`servers`
@@ -771,6 +774,90 @@ mosdns **没有 LuCI 网页前端**（官方 luci 源不收录 luci-app-mosdns�
 但它是「配置一次就长期不动」的后台组件——本次已把配置烘焙进固件，日常完全不需要碰。
 社区第三方有 luci-app-mosdns 面板，但那是配合它自家模板方案用的，
 跟自定义 YAML 不兼容，不值得为此引入第三方源。
+
+---
+
+## 十二·六、省内存与 AGH 治理：全部烘焙进固件（full 档位）
+
+这一批改动**全部做在固件里，不在实机上**。原因是一条容易踩错的规则：
+
+OpenWrt 的 sysupgrade 保留配置是**白名单制**（`sbin/sysupgrade` 的
+`list_static_conffiles`），只保留 `/etc/sysupgrade.conf` 与 `/lib/upgrade/keep.d/*`
+里**列出来的**路径。实测本机 22 个 keep.d 文件的并集里 **不含 `/etc/init.d/`、
+`/etc/rc.d/`、`/etc/uci-defaults/`**：
+
+| 目录 | 升级时 | 结果 |
+|---|---|---|
+| `/etc/init.d/`、`/etc/rc.d/` | 不保留 | 由**固件里的**版本重建 |
+| `/etc/config/`、`/etc/AdGuardHome.yaml` | 保留 | 保留 |
+
+⇒ 烘进固件的 init 改动**每次升级自动就位**；反过来，在实机上改 `/etc/init.d/*`
+或删 `/etc/rc.d/S19*`，下次刷机就被固件版覆盖，等于白做。
+
+### 1. 关掉 ssr-rules 自动刷新守护进程（省约 2.2MB）
+
+落地在 `diy-part2.sh` 的同名段落，那里有完整取证。一句话：实测它的检测函数
+`check_nftables_status` 只查「`inet ss_spec` 这张表在不在」+「两个 chain 存不存在」，
+**查不到 9/22 真正出问题的那条透明重定向链**；唯一的动作 `force_update_persistence`
+又不重铺运行时规则 ⇒ 纯空转。加上 pidfile 缺陷（`$$` 在 `( ) &` 子壳里仍是父进程 PID，
+实机验证过）导致它只累积不替换 —— 实机跑着两份，多占 2.2MB。
+
+25.12 用 dev 版 ssr+，`USE_TABLES=nftables` 分支里 `ARG_A="-A"` 是硬编码
+（23.05 的 master 版是 iptables 分支里 `ARG_A=""`，结构不同），补丁只改那个赋值，
+保留紧随其后的 nft 持久化规则恢复逻辑（那段与守护进程无关，要留着）。
+
+### 2. 空壳覆盖官方 `adguardhome` 包的 init（`files/etc/init.d/adguardhome`）
+
+两个包各带一个启动脚本，名字只差大小写，极易混：
+
+| | `/etc/init.d/adguardhome`（S19） | `/etc/init.d/AdGuardHome`（S95） |
+|---|---|---|
+| 来自 | 官方包 `adguardhome`（装二进制） | `luci-app-adguardhome`（装界面） |
+| 用哪份配置 | `/etc/adguardhome.yaml`（包自带、无人维护，`querylog.interval: 2160h` = **90 天**） | `/etc/AdGuardHome.yaml`（调好的那份） |
+| 实机状态 | 跳过 → 接口 up 后试一次 → `exit_code: 1` | **真正在跑**（PID 3880，占 5335 与 3000） |
+
+风险只有一条：官方那份若先抢到 5335 端口，AGH 就会用**另一份配置**跑起来，90 天的
+querylog 会把 122MB 的 tmpfs 撑爆。
+
+改法是用空壳脚本覆盖它：`rc.common` 在脚本没有定义 `USE_PROCD` 时，
+`start()`/`stop()` 默认就是 `return 0` ⇒ 只写 `#!/bin/sh /etc/rc.common` + `START=19`，
+它就不注册服务、不抢端口，也不再在开机日志里留 `exit_code: 1` 的噪音。
+二进制仍由官方包提供，LuCI 那份不受影响。
+
+> `files/` 目录是在**包安装之后、postinst 之前**复制进固件的（`include/rootfs.mk:71`），
+> 所以烘焙的文件能覆盖包自带的同名文件，不需要改包。
+
+### 3. 黑名单目录挂到闪存（`files/etc/init.d/agh-filters`，省约 4.2MB）
+
+AGH 的数据目录 `/var/adguardhome/data/` 在 `/var` 上，而 `/var` 是 tmpfs ⇒ 数据全在内存里、
+重启即清。其中 `filters/1.txt`（4.16MB）是最大单项，AGH 启动时发现文件不在就立即重新下载。
+
+做法：开机时把 `/etc/AdGuardHome-filters` **bind mount** 到 `/var/adguardhome/data/filters`，
+AGH 直接加载闪存里那份、不再重下，这 4.16MB 也从内存里挪走；黑名单走常规更新时
+**覆盖同一个文件**、不会攒历史版本。配套 `files/lib/upgrade/keep.d/agh-filters`
+声明该目录随 sysupgrade 保留（代价：升级备份包多约 1MB）。
+
+> 为什么不用 LuCI 界面里那两个「备份 / 恢复」勾选框：那是**死代码**。
+> `luci-app-adguardhome` 的 init 里 `mkdir -p $workdir/data` 写在
+> `[ ! -d "$workdir/data" ]` 判断**之前** ⇒ 恢复分支永不执行；备份要读的
+> `backupfile` / `backupwdpath` 在 `/etc/config/AdGuardHome` 里根本没设置
+> （默认值指向 `/usr/bin/AdGuardHome`，那是文件不是目录）。
+>
+> filters 更新间隔**保持 24 小时不动**：改 7 天收益极小（128MB 级 NAND 按 3000 次
+> 擦写算，4.16MB/天 ≈ 1.5GB/年，几十年才到寿命），只会让名单最多滞后 7 天。
+
+> 挂载失败时脚本 `return 0`，**不阻断开机**（这条降级路径已在测试环境实测）——
+> 最坏情况退化成「黑名单重新下载」，不影响启动。
+
+### 4. AGH 缓存 / 查询日志 / 安全搜索 —— 已在烘焙 yaml 里
+
+`files/etc/AdGuardHome.yaml` 已改：`cache_size` 4MB→1MB、`querylog.interval` 12h→6h、
+`safe_search` 全关。`/etc/AdGuardHome.yaml` 虽然在保留清单里，但**首次迁 25.12 用 `-n`
+不保留配置** ⇒ 刷完即用固件里那份；之后每次保留配置刷机，保留的也是 AGH 自己维护出来的
+schema 34 版本，值一样。
+
+> 明确**不做**的项：dnsmasq `cachesize` 8000→2000（收益 0.5–1MB 太小，重复查询变多）、
+> 废掉 AGH「更新核心版本」按钮、给 AGH 设管理员账号（两者都是遗留观察项）。
 
 ---
 
@@ -1222,6 +1309,18 @@ v1.06 补上按可用内存**单独**触发的一条：
 | 顺手做的省内存项 | `dns.cache_size` 4MB → **1MB**；`querylog.interval` 12h → **6h** |
 | 坑 | AGH 写出的 `safe_fs_patterns` 带的是**当时 workdir 的绝对路径**（PC 上的 `C:\Users\...`）—— 必须换成路由器路径 `/var/adguardhome/data/userfilters/*`，否则把 PC 路径烘焙进固件 |
 | 验证 | 官方 0.107.78 本体 `--check-config` → **exit=0 且校验前后 md5 一字未变**（`d5b0ef73…`），日志无任何 `config_migrator: upgrade` 行。这就是「全新刷机 AGH 一定能起来」的判据 |
+
+**同日第三笔提交：省内存与 AGH 治理三项改为烘焙进固件（详见十二·六章）**
+
+原本打算「迁到 25.12 时在实机上改」，核对 sysupgrade 源码后**推翻**了这一做法 —— 保留配置是白名单制，`/etc/init.d/` 与 `/etc/rc.d/` 都**不在**保留清单里（实测本机 22 个 keep.d 文件的并集），所以：**在固件里改 = 每次升级自动就位；在实机上改 = 下次刷机被覆盖，白做。**
+
+| 项 | 落点 | 做法 |
+|---|---|---|
+| 关 ssr-rules 自动刷新守护进程（≈2.2MB） | `diy-part2.sh` | sed 改 dev 版 `USE_TABLES=nftables` 分支里的 `ARG_A="-A"`；未命中打 `::warning::` 而**不** fail（失效只多占 2.2MB，不值得让季度编译挂掉）|
+| 停用官方 `adguardhome` 包的 init（S19） | `files/etc/init.d/adguardhome` | 空壳覆盖。`rc.common` 在无 `USE_PROCD` 时 `start()` 默认 `return 0` ⇒ 不注册服务、不抢 5335 端口 |
+| 黑名单目录挂闪存（≈4.2MB） | `files/etc/init.d/agh-filters` + `files/lib/upgrade/keep.d/agh-filters` | 开机 bind mount `/etc/AdGuardHome-filters` → `/var/adguardhome/data/filters`；挂载失败返回 0 不阻断开机 |
+
+顺带在 `diy-part2.sh` 里补了 `chmod +x files/etc/init.d/*` —— 从 GitHub 网页上传的文件没有可执行位，漏了这一步烘焙的 init 根本不会跑。
 
 ### 2026-09-24 · 编译前体检再揪三个 bug（升级状态判定恒假 + 烘焙 yaml 非法结构 + 烘焙 yaml 与 AGH schema 不同构）
 

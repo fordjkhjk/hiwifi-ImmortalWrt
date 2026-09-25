@@ -1,0 +1,12 @@
+# AdGuard Home 的过滤器（黑名单）目录。
+#
+# 见 /etc/init.d/agh-filters —— 开机时它把 /etc/AdGuardHome-filters
+# bind mount 到 /var/adguardhome/data/filters，让黑名单存闪存而不是 tmpfs。
+#
+# 本文件声明该目录要随 sysupgrade 一起备份恢复，这样黑名单既能扛重启
+# 也能扛升级（代价：升级时的配置备份包多约 4.4MB）。
+#
+# 注意：本文件名（agh-filters）与 luci-app-adguardhome 无关，是独立的声明文件。
+# 那个包自己的 keep.d 文件由它的 init 脚本在每次启动时用 `echo >` 重写，
+# 所以不能把本声明混进那个文件里。
+/etc/AdGuardHome-filters/

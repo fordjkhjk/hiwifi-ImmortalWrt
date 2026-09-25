@@ -1,0 +1,72 @@
+#!/bin/sh /etc/rc.common
+#
+# 空壳覆盖：停用官方 adguardhome 包自带的 init 脚本
+# 建立日期 2026-09-25
+#
+# ---------------------------------------------------------------------------
+# 背景：这台设备装了两个 AdGuard Home 相关的包，各带一份 init 脚本，
+#       名字只差大小写，极易混淆：
+#
+#   /etc/init.d/adguardhome   ← 官方 adguardhome 包（装二进制的那个）
+#                                START=19 / STOP=89 / USE_PROCD=1
+#   /etc/init.d/AdGuardHome   ← luci-app-adguardhome（装界面的那个）
+#                                START=95 / STOP=01 / USE_PROCD=1
+#
+#   实机取证（2026-09-25）：
+#       ubus: adguardhome  running=false  exit_code=1
+#       ubus: AdGuardHome  running=true   pid=3880      ← 真正干活的
+#
+# ---------------------------------------------------------------------------
+# 官方那份为什么不干活：
+#   它的 boot() 只设 ADGUARDHOME_BOOT=1 然后 start，而 start_service() 开头
+#   就判断 ADGUARDHOME_BOOT —— 开机时直接 return 0 不注册任何东西，改成挂一个
+#   'interface.*.up'(+5000ms) 的 procd raw trigger。
+#   ⇒ procd 记下的 "running=false exit_code=1" 是「按设计跳过」留下的痕迹，
+#     不是崩溃，也不会有 respawn 重试（官方 init 没配 respawn）。
+#
+# ---------------------------------------------------------------------------
+# 为什么仍然要停掉它：
+#   它用的是另一份配置 —— /etc/config/adguardhome 里的 config_file 默认
+#   /etc/adguardhome/adguardhome.yaml，而那份配的是 querylog.interval=2160h
+#   （90 天）。万一哪次开机 LuCI 那份起慢了或挂了，它就会先把 5335 端口抢到
+#   手，用那份配置跑起来：122MB 的 tmpfs 会被查询日志一路撑爆，而且那份 yaml
+#   带着 9/18 事故里见过的坏结构。
+#
+# ---------------------------------------------------------------------------
+# 为什么写成空壳就够（已对 25.12 的 lib/rc.common 源码逐条确认）：
+#
+#   rc.common 顶层默认 start() / stop() 都是 `return 0`；
+#   只有脚本里定义了 USE_PROCD 时，它才会进入
+#       [ -n "$USE_PROCD" ] && { ... start() { rc_procd start_service ... } ... }
+#   这个块把 start() 换成 procd 版本。
+#
+#   本脚本不定义 USE_PROCD ⇒ start() 保持默认的 `return 0`
+#   ⇒ 开机执行 /etc/init.d/adguardhome start 什么都不做，
+#     不注册任何 procd 服务，也就不会有人去占 5335 端口。
+#
+#   START/STOP 保留原值只是让 rc.d 链接结构与原固件一致；
+#   构建时 include/rootfs.mk 的 enable 循环会照常生成 S19/K89 链接。
+#
+#   副作用（已知且无害）：LuCI 的服务列表里 "adguardhome" 仍会显示为已启用，
+#   因为链接还在。但它不注册任何服务，属显示层面的假象，不影响功能。
+#
+# ---------------------------------------------------------------------------
+# 不删除、不改动二进制：AGH 本体仍由官方包提供（/usr/bin/AdGuardHome），
+# LuCI 那份 init 用的就是它。本文件只是把「另一个启动入口」堵掉。
+#
+# 想恢复官方行为：删掉本文件即可（官方包里的原始脚本会重新生效）。
+#
+
+START=19
+STOP=89
+
+# 显式空实现 —— 刻意什么都不做。
+# 不写这两个函数其实也可以（rc.common 顶层默认就是 return 0），
+# 写出来是为了让本文件的意图自证，不依赖读者去翻 rc.common。
+start() {
+	return 0
+}
+
+stop() {
+	return 0
+}

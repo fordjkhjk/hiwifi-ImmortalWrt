@@ -27,10 +27,13 @@ fi
     sed -i "s/option hostname.*/option hostname 'HC5962'/" package/base-files/files/etc/config/system
 
 # !! 关键: 从 GitHub 网页上传的文件默认没有可执行权限，
-#    uci-defaults 脚本不可执行 = 不会被运行 = 所有定制全部失效
+#    uci-defaults / init.d 脚本不可执行 = 不会被运行 = 所有定制全部失效
 chmod +x files/etc/uci-defaults/* 2>/dev/null || true
+chmod +x files/etc/init.d/* 2>/dev/null || true
 echo ">> [diy-part2] uci-defaults 权限:"
 ls -l files/etc/uci-defaults/ 2>/dev/null || true
+echo ">> [diy-part2] init.d 权限:"
+ls -l files/etc/init.d/ 2>/dev/null || true
 
 # ------------------------------------------------------------------
 # 修复 ssr+ (helloworld feed) gen_config.lua 的 gRPC 空表 bug
@@ -65,6 +68,46 @@ if [ -f "$SUB" ] && grep -q 'result.serviceName = params.serviceName$' "$SUB"; t
     echo ">> [diy-part2] 已修复 ssr+ subscribe.lua 的 serviceName 丢失 bug（大小写键名兜底）"
 else
     echo "!! [diy-part2] 未找到 $SUB 或已无目标行，跳过 subscribe.lua bug 修复"
+fi
+
+# ------------------------------------------------------------------
+# 关闭 ssr+ 的「nftables 规则自动刷新守护进程」（省内存）
+#
+# 它是什么：
+#   ssr-rules 带 -A 参数时会 fork 一个常驻循环，每 300 秒查一次规则状态
+#   （AUTO_UPDATE_INTERVAL=300 写死在 /usr/bin/ssr-rules）。
+#
+# 实测（2026-09-25，对 23.05 实机现跑的 master 版逐函数读过）：
+#   1. 它的检测函数 check_nftables_status 只查「inet ss_spec 这张表在不在」
+#      +「两个 chain 存不存在」—— 恰恰查不到 9/22 真正出问题的那条透明重定向链。
+#   2. 它唯一的动作 force_update_persistence 是删掉持久化文件再重新导出，
+#      不会重新铺运行时规则。
+#   ⇒ 9/22 那次链丢了，它跑了几个小时一次都没发现，最后靠手动换节点才恢复。
+#      纯空转。
+#
+# 还有一个上游 bug 让它只会累积、不会替换：
+#   守护进程用 `echo $$ > /var/run/ssr-rules-daemon.pid` 记自己的 PID，但 $$ 在
+#   `( ... ) &` 子壳里仍是父进程的 PID（实机验证：sh -c "echo main=$$; ( echo sub=$$ ) &"
+#   两者相同），父脚本退出后 pidfile 里是个死 PID ⇒ 下次重启时 stop 逻辑认为
+#   「没有旧守护进程」直接起新的。实机实测跑着两份，多占 2.2MB 内存。
+#
+# 改法：
+#   25.12 用 dev 版 ssr+：USE_TABLES=nftables 分支里 ARG_A="-A" 是硬编码
+#   （23.05 的 master 版是 iptables 分支里 ARG_A=""，结构不同）。
+#   我们已选 nftset ⇒ 必走 nftables 分支 ⇒ sed 只改那个赋值，
+#   保留紧随其后的 nft 持久化规则恢复逻辑（那段与守护进程无关，要留着）。
+#
+#   补丁没命中时打 ::warning:: 而不 fail：这个改动失效的后果只是「多占 2.2MB
+#   + 空转」，不值得让整个季度编译失败，但必须可见。
+# ------------------------------------------------------------------
+INIT="package/feeds/helloworld/luci-app-ssr-plus/root/etc/init.d/shadowsocksr"
+if [ -f "$INIT" ] && grep -q 'ARG_A="-A"' "$INIT"; then
+    sed -i 's/ARG_A="-A"/ARG_A=""/' "$INIT"
+    echo ">> [diy-part2] 已关闭 ssr-rules 自动刷新守护进程（nftables 分支 ARG_A 置空）"
+elif [ -f "$INIT" ]; then
+    echo "::warning:: [diy-part2] $INIT 里未找到 ARG_A=\"-A\"，ssr-rules 守护进程未被关闭（不影响编译，但会多占约 2.2MB 内存）"
+else
+    echo "!! [diy-part2] 未找到 $INIT，跳过 ssr-rules 守护进程修改"
 fi
 
 # ------------------------------------------------------------------

@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+#
+# 把 AdGuard Home 的黑名单过滤器目录从 tmpfs 挪到闪存
+# 建立日期 2026-09-25
+#
+# ---------------------------------------------------------------------------
+# 为什么做这件事：
+#   AGH 的工作目录是 /var/adguardhome，而 /var 是 tmpfs（内存盘）。
+#   其中 data/filters/1.txt 是 AGH 数据目录里最大的一项，实测 4.37MB
+#   （182777 条规则，2026-09-25 实测）。
+#
+#   tmpfs 一重启就清空 ⇒ AGH 只能重新下载整份黑名单：
+#     - 白白长期占着 4.37MB 内存
+#     - 还依赖「开机时网络已就绪、DNS 已通」（下载走 DoH/隧道，开机那几秒
+#       隧道未必就绪）
+#
+#   AGH 自己的日志就是证据（同一份文件的两次更新）：
+#     9/24 15:38:39  updated filter 1: 4363512 bytes, 182454 rules
+#                         → rule count: 182454 (was 0)        ← 重启后从零下载
+#     9/25 15:39:03  updated filter 1: 4370661 bytes, 182777 rules
+#                         → rule count: 182777 (was 182454)   ← 文件在手，只换新版
+#
+# ---------------------------------------------------------------------------
+# 怎么做：
+#   开机时先在闪存上建好 /etc/AdGuardHome-filters（在 /overlay 上），
+#   再把它 bind mount 到 /var/adguardhome/data/filters。
+#   之后 AGH 对 filters 的读写都落在闪存上：重启后直接用旧那份，只在
+#   filters_update_interval 到点时才覆盖更新。
+#
+#   AGH 的语义是「覆盖同一个 1.txt，绝不累积多份历史版本」，所以闪存上
+#   永远只有一份约 4.4MB 的文件，不会越攒越多。
+#
+# ---------------------------------------------------------------------------
+# 时序：
+#   本脚本 START=15，早于官方 adguardhome(S19) 与 LuCI AdGuardHome(S95)。
+#   两个 AGH init 的启动流程里对这个目录只做 `mkdir -p $workdir/data`
+#   （对已挂载的目录无害），不会清掉 filters —— 已对 luci-app-adguardhome
+#   1.8-11 的完整 init 逐行核对过：唯一的 `rm -f -r $workdir/data/filters`
+#   在 backup() 里，而 backup() 依赖 UCI 的 backupfile 选项（实机为空），
+#   循环体空转，永不执行。
+#
+#   实机上 AGH 以 root 运行（/proc/PID/status Uid: 0），所以挂载后不存在
+#   属主/权限问题。
+#
+# ---------------------------------------------------------------------------
+# 升级持久性：
+#   /etc/AdGuardHome-filters/ 已在 files/lib/upgrade/keep.d/agh-filters 里
+#   声明。keep.d 目录本身不在 sysupgrade 的保留清单里（由固件版重建），
+#   所以每次刷机都会换成固件里这份 ⇒ 这条声明长期有效。
+#   ⇒ 黑名单既能扛重启，也能扛 sysupgrade（代价：升级时配置备份包多约 4.4MB）。
+#
+# ---------------------------------------------------------------------------
+# 首次开机：
+#   闪存上还没有黑名单，AGH 会立即下载一份（日志里是 `was 0`）。
+#   之后就走「旧文件在手，只换新版」的路径。
+#   若某次下载失败，AGH 会继续用闪存里那份旧的，不会退化成「没有黑名单」。
+#
+
+START=15
+STOP=88
+
+FILTER_DIR=/var/adguardhome/data/filters
+FLASH_DIR=/etc/AdGuardHome-filters
+
+start() {
+	# 闪存目录先建好（首次开机时它还不存在）
+	mkdir -p "$FLASH_DIR" "$FILTER_DIR"
+
+	# 已经挂上了就别重复挂（restart / 手动 start 的场景）
+	if grep -q " $FILTER_DIR " /proc/mounts; then
+		echo "agh-filters: $FILTER_DIR already bind-mounted, skip"
+		return 0
+	fi
+
+	if mount --bind "$FLASH_DIR" "$FILTER_DIR"; then
+		echo "agh-filters: bind-mounted $FLASH_DIR -> $FILTER_DIR (filters now live on flash)"
+	else
+		# 挂失败不是致命的：退回原来的 tmpfs 行为，AGH 照常运行
+		echo "agh-filters: bind mount FAILED, filters stay in tmpfs (non-fatal)"
+	fi
+}
+
+stop() {
+	# 只卸我们自己挂的那一层
+	if grep -q " $FILTER_DIR " /proc/mounts; then
+		umount "$FILTER_DIR" 2>/dev/null || true
+	fi
+}
