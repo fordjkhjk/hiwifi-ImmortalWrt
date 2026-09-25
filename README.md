@@ -136,8 +136,15 @@ ubiconcat1  0x2240000  93.25MB ┘
   sysupgrade **不会拒绝**跨版本，会**静默保留配置** —— 那才是真正的危险点。
 - 首次刷 25.12：SSH 走 `fw-upgrade -y -n`（`-n` = 不保留配置），或在 LuCI 原生升级页
   **取消勾选**「保留配置」。
-- 另需重做两件：`configs/config-full.config`（apk 取代 opkg，须重新 defconfig）、
-  `files/etc/AdGuardHome.yaml`（AGH 0.107.46→0.107.78，schema 须用新本体 `--check-config` 校验）。
+- 另需重做两件 —— **均已于 2026-09-25 完成**（详见文末变更记录）：
+  - `configs/config-full.config`：库包去 ABI 数字后缀（`libstdcpp6`→`libstdcpp`、
+    `libatomic1`→`libatomic`、`libnatpmp1`→`libnatpmp`）；**透明代理后端在 25.12 上
+    只能选 Nftables** —— dev 版给 Iptables 选项加了 `depends on !PACKAGE_firewall4`，
+    而 25.12 默认就装 firewall4，写了会被 defconfig 静默丢弃；机制由
+    iptables+ipset 变为 nftables+nftset。
+  - `files/etc/AdGuardHome.yaml`：升到 **schema 34 / AGH 0.107.78**。旧文件（schema 28）
+    在 0.107.78 上会连做 6 次迁移并改写文件 —— 那正是 9/18 事故的触发路径。
+    已用官方 0.107.78 本体验证：`--check-config` exit=0 **且校验后 md5 不变**。
 
 ### 3. 插件来源核对结果
 
@@ -211,7 +218,7 @@ diy-part1.sh                            # feeds 兜底校验
 diy-part2.sh                            # 默认 IP 兜底 + 权限修复 + full 档位摘除 factory.bin
 files/etc/uci-defaults/zz-hc5962-custom # IP/网关/DNS/关 DHCP/lan zone masq/LuCI 检查更新按钮
 files/etc/uci-defaults/99-dns-setup    # 首启固化 DNS 链：dnsmasq 转发 5335 + 启用 AGH（见第五、七、十二·五章）
-files/etc/AdGuardHome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、4MB 缓存）
+files/etc/AdGuardHome.yaml             # AGH 烘焙配置（端口 5335、上游 127.0.0.1:5353、1MB 缓存、schema 34 / AGH 0.107.78）
 files/etc/mosdns/config.yaml           # mosdns v5.3.3 分流配置（监听 5353，国内外分流，见十二·五章）
 files/etc/mosdns/cn.txt                # 国内域名名单（约 11 万条，dnsmasq-china-list 转换）
 files/etc/config/ksmbd                  # ksmbd 共享配置（U 盘挂到 /mnt/sda1 即自动访客可读写共享；同时绑 LAN+ZeroTier）
@@ -662,7 +669,7 @@ mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`�
 |---|---|
 | `files/etc/mosdns/config.yaml` | v5.3.3 plugins-only 原生格式，监听 5353，定义国内/国外两条分流路径（已用官方 v5.3.3 二进制实跑验证通过） |
 | `files/etc/mosdns/cn.txt` | 国内域名名单（约 11 万条，源自 felixonmars/dnsmasq-china-list，每行一个域名） |
-| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置：上游只有一行 `127.0.0.1:5353`（mosdns）、4MB 缓存、**开乐观缓存**（2026-09-15 起，隧道被挤兑时用过期缓存顶上，缓解国外 DNS 全断） |
+| `files/etc/AdGuardHome.yaml` | AGH 烘焙配置（schema 34 / AGH 0.107.78）：上游只有一行 `127.0.0.1:5353`（mosdns）、**1MB 缓存**（2026-09-25 由 4MB 降档，上下有 dnsmasq 8000 条 / mosdns 4096 条兜底）、**开乐观缓存**（2026-09-15 起，隧道被挤兑时用过期缓存顶上，缓解国外 DNS 全断） |
 | `files/etc/uci-defaults/99-dns-setup` | 首启脚本：dnsmasq 转发 `127.0.0.1#5335` + noresolv、AGH 置 enabled、重启 dnsmasq |
 
 > 为什么不用 geosite.dat：**mosdns v5.3.3 已经移除了 `data_providers`/`servers`
@@ -1192,7 +1199,29 @@ v1.06 补上按可用内存**单独**触发的一条：
 - `.github/workflows/openwrt-builder.yml`：`REPO_BRANCH` → `openwrt-25.12`（含头部注释）
 - `README.md`：本文件同步更新
 
-编译前还需完成两件（不在本次提交内）：`configs/config-full.config` 重新 defconfig（25.12 用 apk 取代 opkg）、`files/etc/AdGuardHome.yaml` 按 AGH 0.107.78 schema 重写并用本体 `--check-config` 验证。
+**同日晚续做（第二笔提交）：把「编译前还需做的两件」也做完了**
+
+① `configs/config-full.config` 按 25.12 + helloworld dev 重做（264 → 285 行）：
+
+| 项 | 内容 |
+|---|---|
+| 库包改名 | 25.12 去掉了 ABI 数字后缀：`libstdcpp6`→`libstdcpp`、`libatomic1`→`libatomic`、`libnatpmp1`→`libnatpmp`（23.05 实机 opkg 仍是旧名） |
+| **透明代理后端换机制** | dev 版给 `Iptables_Transparent_Proxy` 加了 `depends on !PACKAGE_firewall4`，而 25.12 的 `DEFAULT_PACKAGES.router` 默认带 firewall4 ⇒ 写 Iptables 会被 defconfig **静默丢弃**，由 choice 默认值落到 **`Nftables_Transparent_Proxy`**（其 depends 恰为 `PACKAGE_firewall4`）。master（实机的 190-3）没有这条 depends —— 它只在 choice 的 `default` 行里带条件 —— 所以 23.05 实机跑的是 iptables+ipset。**迁移后机制变为 nftables+nftset**，属上游设计变更 |
+| 选项被删 | dev 删掉了 `INCLUDE_Shadowsocks_Libev_Client`（SS 客户端只剩 Rust，我们**不开**：Rust 常驻内存大，而 Xray 原生支持 SS）、`INCLUDE_DNS2SOCKS`、`INCLUDE_IPT2Socks`（改自动依赖） |
+| 新增落点 | `dnsmasq_full_nftset`、`nftables`、`kmod-nft-tproxy`、`kmod-nft-nat`（显式写，确保进固件而非编成 ipk）；ipset 三项保留作安全网 |
+| 核对方式 | 拉 `immortalwrt/{luci,packages,immortalwrt}@openwrt-25.12` + `fw876/helloworld@dev` 四份源码，逐个 `define Package/` 比对 94 项。另澄清：**25.12 的 rust 支持 mipsel**（`rust-values.mk` 的 `RUST_ARCH_DEPENDS` 含 mipsel），旧记「Rust 程序 mipsel 编不了」只对 mihomo/clash 成立 |
+
+② `files/etc/AdGuardHome.yaml` 升到 **AGH 0.107.78 / `schema_version: 34`**：
+
+| 项 | 内容 |
+|---|---|
+| 为什么必须升 | 实测把旧文件（`schema_version: 28`）交给 0.107.78 的 `--check-config`，它会连做 **6 次迁移（28→29→…→34）并改写文件** —— 这正是 9/18 事故的触发路径 |
+| 骨架来源 | 让 0.107.78 **自己迁移写出来**的那份文件，再填回我们的取值（这是「AGH 会不会认」的唯一权威答案） |
+| 新增键 | `dns.cache_enabled` / `cache_optimistic_answer_ttl` / `cache_optimistic_max_age`、`filtering.safe_fs_patterns`、`http.doh.routes`、`querylog.ignored_enabled`、`statistics.ignored_enabled` |
+| 删除键 | `tls.allow_unencrypted_doh`（新版本已移除） |
+| 顺手做的省内存项 | `dns.cache_size` 4MB → **1MB**；`querylog.interval` 12h → **6h** |
+| 坑 | AGH 写出的 `safe_fs_patterns` 带的是**当时 workdir 的绝对路径**（PC 上的 `C:\Users\...`）—— 必须换成路由器路径 `/var/adguardhome/data/userfilters/*`，否则把 PC 路径烘焙进固件 |
+| 验证 | 官方 0.107.78 本体 `--check-config` → **exit=0 且校验前后 md5 一字未变**（`d5b0ef73…`），日志无任何 `config_migrator: upgrade` 行。这就是「全新刷机 AGH 一定能起来」的判据 |
 
 ### 2026-09-24 · 编译前体检再揪三个 bug（升级状态判定恒假 + 烘焙 yaml 非法结构 + 烘焙 yaml 与 AGH schema 不同构）
 
