@@ -1,7 +1,7 @@
 #
 # ImmortalWrt Builder - HiWiFi HC5962 (极路由4增强版)
 #
-# 源码: https://github.com/immortalwrt/immortalwrt   分支: openwrt-23.05
+# 源码: https://github.com/immortalwrt/immortalwrt   分支: openwrt-25.12
 #
 # 本 workflow 自建，不依赖 P3TERX/Actions-OpenWrt 等任何第三方模板。
 # 结构与依赖列表参考社区通用做法，但 REPO_URL 直接指向 ImmortalWrt 官方源码，
@@ -45,7 +45,7 @@ on:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-23.05
+  REPO_BRANCH: openwrt-25.12
   FEEDS_CONF: feeds.conf.default
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh

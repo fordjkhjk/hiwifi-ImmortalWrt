@@ -1,7 +1,10 @@
 # 极路由 4 增强版 (HiWiFi HC5962) · ImmortalWrt 云编译配置
 
-**编译的源码：`https://github.com/immortalwrt/immortalwrt` 分支 `openwrt-23.05`**  
+**编译的源码：`https://github.com/immortalwrt/immortalwrt` 分支 `openwrt-25.12`**  
 **本仓库不引用 P3TERX/Actions-OpenWrt，也不需要**
+
+> **本仓库有两条分支**：`openwrt-25.12` = 当前主线（季度自动编译跑在这里）｜
+> `main` = 对应 openwrt-23.05，**已冻结**，仅作退路保留，需要时手动触发即可编出旧版。
 
 > **没用过 GitHub？先看这份：** [操作手册-手把手.md](操作手册-手把手.md)  
 > 从注册账号到拿到固件，每一步点哪个按钮、填什么都写清楚了，不需要任何基础。  
@@ -40,7 +43,7 @@ REPO_BRANCH: master
 ```yaml
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-23.05
+  REPO_BRANCH: openwrt-25.12
 ...
 run: git clone $REPO_URL -b $REPO_BRANCH openwrt
 ```
@@ -109,19 +112,32 @@ ubiconcat1  0x2240000  93.25MB ┘
 `diy-part2.sh` 会在 full 档位自动把 `IMAGES += factory.bin` 从 HC5962 段落里摘掉，  
 避免它因 check-size 报错把整轮编译拖挂。
 
-### 2. 为什么是 openwrt-23.05 而不是 24.10
+### 2. 为什么是 openwrt-25.12（23.05 已 EOL）
 
-|                                        | 23.05（本项目实际形态）        | 24.10                |
-| -------------------------------------- | ------------------------------ | -------------------- |
-| 防火墙后端                                  | **firewall4 + nftables**（实测） | firewall4 + nftables |
-| 你的 `iptables -t nat -A POSTROUTING...` | 已改由 `zz-hc5962-custom` 首启置 lan zone `masq='1'`，fw4 自动生成 fullcone NAT，直接生效 | 同样按 nftables 写法 |
-| ssr+ 支持                                | 成熟稳定                     | 透明代理/分流不完善           |
+| 维度           | 25.12（当前主线）                                    | 23.05（`main` 分支，已冻结）                    |
+| ------------ | ---------------------------------------------- | --------------------------------------- |
+| 官方支持状态       | **当前唯一受支持的版本**                                 | **2025-08-16 已 EOL** —— 官方明确说连严重安全漏洞都不再修 |
+| ImmortalWrt 该分支 | 活跃（master / 24.10 / 25.12 均在更新）                 | 主源码停 2026-02-27、packages 停 2026-02-06       |
+| 内核           | 6.12                                           | 5.15                                    |
+| 包管理          | **apk**（取代 opkg）                               | opkg                                    |
+| 防火墙后端        | firewall4 + nftables                           | firewall4 + nftables（实测）                |
+| HC5962 设备定义  | 与 23.05 **逐字未改**：`IMAGE_SIZE 32768k`、factory 配方、`DEVICE_PACKAGES` 全一致 | 同左                                      |
+
+**为什么 23.05 上的「季度自动编译」没意义**：源码和 packages 双双停更，编出来的东西与上一份逐字节相同（只差版本时间戳），且拿不到任何安全补丁 —— 那是「重建」，不是「升级」。所以季度编译已迁到 `openwrt-25.12` 分支。
 
 > 注：早期这份配置想"显式切回 firewall3"，实测被 defconfig 静默推翻
 > （`CONFIG_PACKAGE_firewall=y` 被降级成 `=m`，fw4 照装），所以固件里实际
 > 就是 firewall4。自定义 NAT 规则走 uci（lan zone masq），不写任何 nft 文件。
+> 25.12 同样是 firewall4 + nftables，这套写法原样可用。
 
-结论：**23.05 更适配你的需求**。代价是 AdGuard Home 的 LuCI 界面在官方 23.05 feed 里没有，用社区包补（见下）。
+**迁移代价（动手前必须知道）**
+
+- **跨版本必须全新刷机，不能保留配置**。两条分支的 `DEVICE_COMPAT_VERSION` 都是 `1.0`，
+  sysupgrade **不会拒绝**跨版本，会**静默保留配置** —— 那才是真正的危险点。
+- 首次刷 25.12：SSH 走 `fw-upgrade -y -n`（`-n` = 不保留配置），或在 LuCI 原生升级页
+  **取消勾选**「保留配置」。
+- 另需重做两件：`configs/config-full.config`（apk 取代 opkg，须重新 defconfig）、
+  `files/etc/AdGuardHome.yaml`（AGH 0.107.46→0.107.78，schema 须用新本体 `--check-config` 校验）。
 
 ### 3. 插件来源核对结果
 
@@ -129,8 +145,8 @@ ubiconcat1  0x2240000  93.25MB ┘
 | ------------ | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | SMB          | `luci-app-ksmbd`                       | ImmortalWrt 官方 luci feed。ksmbd 是内核态 SMB3，约 300KB；samba4 约 8-10MB，为控体积选 ksmbd                         |
 | U盘自动挂载       | `automount`                            | ImmortalWrt 官方 `package/emortal/automount`，热插拔自动挂载并写 fstab                                           |
-| ssr+         | `luci-app-ssr-plus`                    | **ImmortalWrt 任何官方源都没有**，用上游 `fw876/helloworld`                                                      |
-| AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面只在 luci 的 master 分支有**，23.05 分支没有。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
+| ssr+         | `luci-app-ssr-plus`                    | **ImmortalWrt 任何官方源都没有**，用上游 `fw876/helloworld`。feeds 里**刻意不写分支号**（跟随该仓库默认分支 dev）；2026-09-25 更正：此前写死 `;master`，而 master 自 2026-07-11 停更，导致 ssr+ 长期停在 190-3 从未升级                                                      |
+| AdGuard Home | `adguardhome` + `luci-app-adguardhome` | 核心在官方 packages 源；**LuCI 界面官方 luci feed 里没有**（本项目统一用社区版，不依赖官方 feed 是否有）。社区版 `rufengsuixing/luci-app-adguardhome` 仓库是 package 目录布局（Makefile 在根目录），**不能当 feed 用**（feed 扫描只认子目录，会被静默忽略），由 `diy-part1.sh` 直接 clone 进 `package/` |
 | ZeroTier     | `zerotier` + `luci-app-zerotier`       | **纯官方 packages / luci 源，不需要任何第三方源**。本体约 500KB，依赖 `kmod-tun`（TUN/TAP 虚拟网卡）                            |
 | vlmcsd (KMS) | `vlmcsd` + `luci-app-vlmcsd`           | **纯官方 packages / luci 源**。本体仅 23KB，用于局域网内 Windows / Office 的 KMS 激活                                  |
 | Wake-on-LAN | `luci-app-wol` + `etherwake`           | **纯官方 luci / packages 源**（2026-09-15 烘焙；实机此前已 opkg 手动装过同两款，烘焙后 sysupgrade 升级不再丢失）。etherwake 发魔术包唤醒局域网内支持 WoL 的设备，本体约 10KB，无后台服务 |
@@ -177,7 +193,7 @@ full 档位里的功能组件分两类：**DNS 链（AGH + mosdns）默认运行
 1. **上次踩的坑不是 LEDE 不行，而是被模板偷偷换成了 LEDE 而你不知情**——这是知情权问题，不是 LEDE 本身有问题。现在源码显式写在 workflow 里，这个坑已经不存在了。
 2. **ssr+ 用的是上游 `fw876/helloworld`，比 LEDE 内置的版本更新**。你要"协议尽量全"，走上游源反而更有优势。
 3. **未来升级成本**。路由器刷好后通常长期不动，一两年后想升级时，ImmortalWrt 有活跃上游兜着；LEDE 大概率还停在那套老工具链上。
-4. 23.05 的内核是 5.15，比 LEDE 的 5.4/5.10 新，MT7621 的无线驱动（mt76）也更完善。
+4. 25.12 的内核是 6.12（23.05 是 5.15），比 LEDE 的 5.4/5.10 新，MT7621 的无线驱动（mt76）也更完善。
 
 **什么情况该选 LEDE：** 如果第一诉求是"少折腾、一次编译就成"，且不在意内核新旧，LEDE 的容错率确实更高。要换我就给你配，说一声就行。
 
@@ -264,7 +280,7 @@ cd "immortalwrt-hc5962-build"
 
 git init
 git add -A
-git commit -m "ImmortalWrt 23.05 HC5962 build config"
+git commit -m "ImmortalWrt 25.12 HC5962 build config"
 git branch -M main
 git remote add origin https://github.com/<你的用户名>/<仓库名>.git
 git push -u origin main
@@ -550,7 +566,7 @@ DTS 里也能印证，两个 PCIe 无线节点写的都是 `mt76`：
 
 ### 有线 NAT 加速
 
-顺带说明：ImmortalWrt 23.05 的 ramips target **没有内置 mtk_hnat 驱动**  
+顺带说明：ImmortalWrt 的 ramips target（23.05 实测，25.12 未复核）**没有内置 mtk_hnat 驱动**  
 （查过 `target/linux/ramips/files/drivers/...` 该目录不存在，  
 `mt7621/config-5.15` 里也只有 `CONFIG_NET_MEDIATEK_SOC=y`）。
 
@@ -760,6 +776,13 @@ mosdns **没有 LuCI 网页前端**（官方 luci 源不收录 luci-app-mosdns�
 ```
 cron: '37 3 1 1,4,7,10 *'   timezone: Asia/Shanghai
 ```
+
+**⚠️ 定时任务只在「默认分支」上执行**（GitHub 硬规则，与 workflow 内容无关）。本仓库已把
+默认分支切到 `openwrt-25.12`，所以季度自动编译跟着 25.12 走；`main` 保留但不会自动编译，
+需要时到 Actions 页手动 Run workflow 即可编出 23.05 版本。
+
+**⚠️ Release 是仓库级的**（`/releases/latest` 不分分支）：25.12 编出来后，路由器升级页会
+把它当作普通更新推给你 —— 而跨版本升级**不能保留配置**（见「一、2」节）。
 
 每年 1/4/7/10 月 1 号北京时间 03:37 自动触发，**固定只编 full**。两个原因：
 
@@ -1138,6 +1161,38 @@ v1.06 补上按可用内存**单独**触发的一条：
 ---
 
 ## 十六、变更记录
+
+### 2026-09-25 · 迁移 openwrt-25.12 分支：helloworld 钉错分支的重大更正
+
+**背景**：为「季度编译前自动检查插件上游有没有升级」这个需求做上游核对时，连带查出一条被忽略很久的问题。
+
+**更正一：ssr+ 的 helloworld 源钉错了分支，自 2026-07-11 起从未拿到更新**
+
+| 项 | 内容 |
+|---|---|
+| 位置 | `feeds.conf.default` 第 8 行 `src-git helloworld https://github.com/fw876/helloworld;master` |
+| 事实 | 该仓库有三个分支：`main`（停 2024-10-09）、`master`（**停 2026-07-11**）、`dev`（**活跃，且是仓库默认分支**）。分叉点 `6b578665`（2026-04-26），此后 dev 领先 305 个提交 |
+| 实证 | 实机 `opkg list-installed` 里 `luci-app-ssr-plus - 190-3`（= master@2026-07-11 的版本），而 dev 已是 `196-9`；`luci-i18n-ssr-plus-zh-cn - git-26.192.35200-2abdc9a` 里的 `26.192` = 2026 年第 192 天 = 7/11 |
+| 为什么会这样 | `scripts/feeds` 第 235–240 行：**写了 `;分支` 才 clone 该分支，不写则跟随远程默认分支**。我们一直写着 `;master`，等于主动把自己钉在一个会停更的分支上 |
+| 修复 | 去掉 `;master`（`feeds.conf.default` 与 `diy-part1.sh` 兜底串两处），改为跟随默认分支 |
+| 教训 | 「引用没变」≠「内容是对的」—— 钉的分支死了，基线永远不变，任何靠「比对引用」的自动检查都会**安静地不报警**。上游检查必须落到「**实机产物版本 vs 该分支 HEAD 处 Makefile 的版本**」这个对照上 |
+
+**更正二：xray 永远取 immortalwrt/packages 的版本，helloworld 那份从未生效**
+
+`package/feeds/<feed>` 按**字母序**扫描，`helloworld`(h) 先于 `packages`(p) ⇒ 同名包由 packages 覆盖。实机 `/usr/bin/xray` = `24.12.31`（packages@23.05 的版本），helloworld 钉的 26.5.9 从未被编进固件（25.12 上对应 26.3.27）。
+
+**本次迁移：新建 `openwrt-25.12` 分支**
+
+23.05 上游已于 **2025-08-16 EOL**，ImmortalWrt 的 openwrt-23.05 主源码停 2026-02-27、packages 停 2026-02-06 ⇒ 在该分支上继续季度编译只是「重建」、零安全补丁。故新建 `openwrt-25.12` 分支承接季度自动编译，`main` 冻结留作退路。
+
+改动只涉及 4 个文件：
+
+- `feeds.conf.default`：4 个官方源分支号 → `openwrt-25.12`；helloworld 去掉 `;master`
+- `diy-part1.sh`：兜底 append 串同步去掉 `;master`
+- `.github/workflows/openwrt-builder.yml`：`REPO_BRANCH` → `openwrt-25.12`（含头部注释）
+- `README.md`：本文件同步更新
+
+编译前还需完成两件（不在本次提交内）：`configs/config-full.config` 重新 defconfig（25.12 用 apk 取代 opkg）、`files/etc/AdGuardHome.yaml` 按 AGH 0.107.78 schema 重写并用本体 `--check-config` 验证。
 
 ### 2026-09-24 · 编译前体检再揪三个 bug（升级状态判定恒假 + 烘焙 yaml 非法结构 + 烘焙 yaml 与 AGH schema 不同构）
 

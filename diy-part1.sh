@@ -12,8 +12,11 @@ echo ">> [diy-part1] 当前 feeds.conf.default 内容:"
 cat feeds.conf.default
 
 # 保险起见：确认自定义源确实写进去了（防止 workflow 没覆盖 feeds 文件）
+# 注意：这里刻意不写 ";分支" —— 不写才会跟随 helloworld 的默认分支。
+# 曾经写死 ";master"，结果 master 于 2026-07-11 停更后，ssr+ 长期拿不到
+# 上游更新（实机 opkg 里 luci-app-ssr-plus 停在 190-3 即为此故）。
 grep -q "helloworld" feeds.conf.default || \
-  echo 'src-git helloworld https://github.com/fw876/helloworld;master' >> feeds.conf.default
+  echo 'src-git helloworld https://github.com/fw876/helloworld' >> feeds.conf.default
 
 # luci-app-adguardhome（AdGuard Home 的 LuCI 管理页，社区版）
 # 这个仓库的 Makefile 在仓库根目录，是标准的「package 目录布局」——必须直接
