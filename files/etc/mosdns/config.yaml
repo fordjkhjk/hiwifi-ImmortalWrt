@@ -49,7 +49,7 @@ plugins:
   #    2026-09-07 实测改动：上游由 UDP 的 8.8.8.8 改为 DoH（https 型）。原因：
   #    socks5 有两种用法——CONNECT（转 TCP）与 UDP ASSOCIATE（转 UDP）。上游写
   #    裸 IP（= UDP 查询）时走的是后者，需要机场服务端把 UDP 从隧道里还原出去；
-  #    实测 susun 机场（trojan+ws 与 trojan+gRPC 两种传输、76 个节点）一律不转发
+  #    实测所用机场（trojan+ws 与 trojan+gRPC 两种传输、76 个节点）一律不转发
   #    UDP，于是每个国外查询都卡满 5 秒超时，最终只能落到兜底拿 114 的污染结果。
   #    DoH 走 443 = TCP，用 socks5 的 CONNECT，与浏览器流量同路，机场必然转发。
   #    请勿改回 UDP 上游，除非换了一家确认支持 UDP 转发的机场。

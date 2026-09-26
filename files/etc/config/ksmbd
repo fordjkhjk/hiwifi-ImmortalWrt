@@ -9,7 +9,8 @@
 # 虚拟网卡，外网 ZT 设备才能访问共享（2026-09-05 实机排障确认：默认只绑
 # br-lan，ZT 访问 445 直接 Connection refused）。
 # 依赖：network 里要有名为 zerotier 的接口段（zz-hc5962-custom 第 8 节
-# 创建，device 与网络 ID 绑定；若换了 ZT 网络 ID，需同步改两处 device 名），
+# 创建，其 device 由 ZeroTier 按网络 ID 派生；换网络 ID 后网卡名会变，
+# 需同步更新那一处的 device 值——本文件用的是逻辑接口名，不用改），
 # 配套 hotplug 脚本 etc/hotplug.d/net/60-ksmbd-zerotier 解决开机时序。
 #
 # 2026-09-05 从实机验证配置固化。

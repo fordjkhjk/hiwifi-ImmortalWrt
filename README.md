@@ -361,7 +361,7 @@ full 档位不产出 factory.bin，是 `diy-part2.sh` 主动摘掉的——它�
 ### 第 2 步：升级到 full 版
 
 1. 电脑改回自动获取 IP（或设 `192.168.112.x/24`）
-2. 浏览器访问 **<http://192.168.112.200>** （用户名 `root`，密码 `password`）
+2. 浏览器访问 **<http://192.168.112.200>** （用户名 `root`，密码为你自己设定的 root 密码）
 3. **系统 → 备份/升级 → 刷写新的固件**
 4. 上传 full 版的 **`*sysupgrade.bin`**
 5. **不要勾选「保留配置」**（勾了的话 uci-defaults 不会重跑，虽然网络配置会保留，但保险起见不勾）
@@ -389,9 +389,10 @@ samba 同时监听 LAN 和 ZeroTier 虚拟网卡（`option interface 'lan zeroti
 
 - ksmbd 开机启动早于 zerotier 入网，靠 `files/etc/hotplug.d/net/60-ksmbd-zerotier`
   在 ZT 网卡出现时自动重启 ksmbd 补绑，无需人工干预
-- ZT 网卡名（`ztuze4o5om`）由网络 ID 派生（当前 ID `9f77fc393e3b4cf2`）。
-  若换了网络 ID，需同步改 `files/etc/uci-defaults/zz-hc5962-custom` 第 8 节
-  和 ksmbd 配置里的 device 名
+- ZT 网卡名由网络 ID 派生（形如 `zt` + 10 个字符）。该名字在
+  `files/etc/uci-defaults/zz-hc5962-custom` 第 8 节登记。**换了 ZeroTier
+  网络 ID，网卡名就会变**，需同步更新该处的 device 值并重新编译固件
+  （ksmbd 那边用的是逻辑接口名 `zerotier`，不用改）
 
 > 若 U 盘是 NTFS 且需要写入，固件已内置 `kmod-fs-ntfs3`（内核态 NTFS 读写）。  
 > 极少数老 U 盘不识别，多半是 `kmod-usb-storage-uas` 的 UASP 兼容问题，拔插重试即可。
@@ -712,7 +713,7 @@ mosdns 及其配置**已经烘焙进 full 固件**（`CONFIG_PACKAGE_mosdns=y`�
 
 上游写 `addr: 8.8.8.8`（不带前缀）= **UDP 查询**，走的是 socks5 的
 **UDP ASSOCIATE**：需要机场服务端把 UDP 从隧道里还原出去、再发给 8.8.8.8:53。
-实测 susun 机场（trojan+ws 与 trojan+gRPC 两种传输、共 76 个节点）**一律不转发
+实测所用机场（trojan+ws 与 trojan+gRPC 两种传输、共 76 个节点）**一律不转发
 UDP**，于是每个国外查询都卡满 5 秒超时，最后只能落到兜底、拿 114 的污染结果
 （真实表现：网页版 B 站加载海外资源时转圈很久才出来）。
 
