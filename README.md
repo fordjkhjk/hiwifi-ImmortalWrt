@@ -445,15 +445,26 @@ MT7621 是 **mipsel** 架构，不少 Go/Rust 写的现代协议跑不了。逐�
 | 选项                                  | 组件包                                         | 覆盖                                                                          |
 | ----------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------- |
 | `INCLUDE_Xray`                      | `xray-core`                                 | VLESS / VMess / Trojan / Shadowsocks / Reality，含 XTLS、gRPC、WebSocket、HTTP/2 |
-| `INCLUDE_Shadowsocks_Libev_Client`  | `shadowsocks-libev-ss-local` `-ss-redir`    | Shadowsocks                                                                 |
+| ~~`INCLUDE_Shadowsocks_Libev_Client`~~ | ~~`shadowsocks-libev-ss-local` `-ss-redir`~~ | ⛔ **dev 版已删除该选项；且该包在 25.12 上编译必挂，已从 config 移除**                                                                 |
 | `INCLUDE_ShadowsocksR_Libev_Client` | `shadowsocksr-libev-ssr-local` `-ssr-redir` | ShadowsocksR（Makefile 里默认就是 y）                                              |
 | `INCLUDE_ChinaDNS_NG`               | `chinadns-ng`                               | 国内外域名分流，ssr+ 的看家功能                                                          |
-| `INCLUDE_DNS2SOCKS`                 | `dns2socks`                                 | Makefile 默认 y，体积极小                                                          |
-| `INCLUDE_IPT2Socks`                 | `ipt2socks`                                 | Xray 透明代理链路要用到                                                              |
+| `CONFIG_PACKAGE_dns2socks`          | `dns2socks`                                 | dev 版删掉了 `INCLUDE_DNS2SOCKS` 开关，改为直接选包                                      |
+| `CONFIG_PACKAGE_ipt2socks`          | `ipt2socks`                                 | 同上，`INCLUDE_IPT2Socks` 开关已不存在；Xray 透明代理链路要用到                              |
 
-透明代理后端用 `Iptables_Transparent_Proxy`（ssr+ 的 ipset 分流方案，与防火墙后端
+**实机 23.05 上**透明代理后端是 `Iptables_Transparent_Proxy`（ssr+ 的 ipset 分流方案，与防火墙后端
 是 firewall4 不冲突——它走 iptables 命令行 + ipset，fw4 管的是 nftables 那套规则表），  
 它会自动 select `dnsmasq-full(ipset)` + `ipset` + 若干 `iptables-mod-*`。
+
+⚠️ **迁到 25.12 后这套就用不了了**：dev 版给 `Iptables_Transparent_Proxy` 加了
+`depends on !PACKAGE_firewall4`，而 25.12 默认装 firewall4 ⇒ 写 Iptables 会被 defconfig
+**静默丢弃**，choice 自动落到 `Nftables_Transparent_Proxy`（nftables + nftset）。
+config 里已同步写上 nftables 后端与 `dnsmasq_full_nftset`，ipset 那三项只作安全网保留。
+详细对照见第十二章的迁移条目。
+
+⛔ **另注（2026-09-26 实测）**：`shadowsocks-libev-ss-local` / `-ss-redir` / `-ss-rules`
+这三行已从 `config-full.config` 删除，**不要加回**。它自 24.10 起被上游从 packages feed
+移除，只剩 helloworld 那份 git + 子模块的版本，而 25.12 的下载器不支持子模块 ⇒
+必然报 `Hash mismatch` 并让**整个 full 档编译失败**。SS 协议由 Xray 原生承载，本就不需要它。
 
 ### 按需开启（默认全关）
 
