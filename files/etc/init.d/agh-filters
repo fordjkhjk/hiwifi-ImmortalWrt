@@ -62,12 +62,31 @@ STOP=88
 FILTER_DIR=/var/adguardhome/data/filters
 FLASH_DIR=/etc/AdGuardHome-filters
 
+# ---------------------------------------------------------------------------
+# 是否已经挂着我们这一层
+#
+# ★ 2026-09-27 修：原来直接拿 $FILTER_DIR 去 grep /proc/mounts，
+#   但本机 /var 是指向 /tmp 的符号链接，内核对挂载点记录的是**解析后的真实
+#   路径** —— /proc/mounts 里写的是
+#       overlayfs:/overlay /tmp/adguardhome/data/filters overlay ...
+#   而不是 /var/adguardhome/data/filters，所以那个 grep 永远匹配不到。
+#   后果：每次 start（含开机 S15、以及任何 restart / 手工 start）都会在同一个
+#   挂载点上再叠一层 bind mount，越叠越多（实机 2026-09-27 现场见 2 层）。
+#   现在统一按解析后的真实路径比较。
+# ---------------------------------------------------------------------------
+mounted() {
+	local real
+	real="$(readlink -f "$FILTER_DIR" 2>/dev/null)"
+	[ -n "$real" ] || real="$FILTER_DIR"
+	awk -v t="$real" '$2 == t { n++ } END { exit !(n > 0) }' /proc/mounts
+}
+
 start() {
 	# 闪存目录先建好（首次开机时它还不存在）
 	mkdir -p "$FLASH_DIR" "$FILTER_DIR"
 
 	# 已经挂上了就别重复挂（restart / 手动 start 的场景）
-	if grep -q " $FILTER_DIR " /proc/mounts; then
+	if mounted; then
 		echo "agh-filters: $FILTER_DIR already bind-mounted, skip"
 		return 0
 	fi
@@ -81,8 +100,8 @@ start() {
 }
 
 stop() {
-	# 只卸我们自己挂的那一层
-	if grep -q " $FILTER_DIR " /proc/mounts; then
-		umount "$FILTER_DIR" 2>/dev/null || true
-	fi
+	# 只卸我们自己挂的那一层；万一历史版本叠了多层，这里一并卸干净
+	while mounted; do
+		umount "$FILTER_DIR" 2>/dev/null || break
+	done
 }
