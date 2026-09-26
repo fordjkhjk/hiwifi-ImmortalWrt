@@ -116,13 +116,36 @@ EOF
 #          必须在 SSH 终端里跑，不能做成网页一键刷机。
 # ------------------------------------------------------------------
 # 依赖的包在 minimal 档位里没有（minimal 不含 jq），先判断再添加
+#
+# 幂等性说明：sysupgrade 保留配置时，/etc/config/luci 会被保留、而
+# /etc/uci-defaults/ 不在保留白名单里（固件自带的副本会重新就位并再执行
+# 一次本脚本）——若不做去重，"add luci command" 每刷一次机就多追加一条，
+# 实机曾累积到 3 条重复。故这里：已有同名段则只校正 command 路径，
+# 并把历史累积的多余重复段删掉。
 if [ -x /usr/bin/fw-check-update ] && command -v jq >/dev/null 2>&1; then
-    uci -q batch <<'EOF'
+    idxs=$(uci -q show luci 2>/dev/null | awk -F. "/name='检查固件更新'/{print \$2}")
+    if [ -z "$idxs" ]; then
+        uci -q batch <<'EOF'
 add luci command
 set luci.@command[-1].name='检查固件更新'
 set luci.@command[-1].command='fw-check-update'
 commit luci
 EOF
+    else
+        # 倒序处理：删匿名段会让后面的 @command[N] 索引前移，正序会删错/漏删
+        rev=""
+        for i in $idxs; do rev="$i $rev"; done
+        keep=""
+        for i in $rev; do keep="$i"; done
+        for i in $rev; do
+            if [ "$i" = "$keep" ]; then
+                uci -q set "luci.${i}.command='fw-check-update'"
+            else
+                uci -q delete "luci.${i}"
+            fi
+        done
+        uci -q commit luci
+    fi
 fi
 
 # ------------------------------------------------------------------
@@ -130,12 +153,13 @@ fi
 #
 # 背景（2026-09-05 实机排障）：ksmbd init 只认 uci network 里登记过的
 # 接口段来解析设备名。这里创建一个 proto=none（unmanaged）的接口段，
-# 仅用于把名字 zerotier 映射到 ZT 虚拟网卡 ztuze4o5om——netifd 不参与
+# 仅用于把名字 zerotier 映射到 ZT 虚拟网卡（设备名见下方 device 项——由
+# ZeroTier 按网络 ID 派生）——netifd 不参与
 # 寻址，地址仍由 zerotier 自己管理。
 #
-# 注意：zt 网卡名由「网络 ID」派生（当前 ID 9f77fc393e3b4cf2 →
-# ztuze4o5om）。若以后在 LuCI 里换了网络 ID，网卡名会变，需同步改
-# 这里和 files/etc/config/ksmbd 里的引用（改完 /etc/init.d/ksmbd restart）。
+# 注意：zt 网卡名由「网络 ID」派生。若以后在 LuCI 里换了网络 ID，网卡名会变，
+# 需同步改下面的 device 值（改完 /etc/init.d/ksmbd restart）。
+# 本文件是首启脚本，改完要重新编译固件才生效。
 # ZT 未配置/未入网时本段无副作用；配合 etc/hotplug.d/net/60-ksmbd-zerotier
 # 解决 ksmbd 先于 zerotier 启动的时序问题。
 # ------------------------------------------------------------------
