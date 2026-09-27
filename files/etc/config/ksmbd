@@ -14,11 +14,18 @@
 # 配套 hotplug 脚本 etc/hotplug.d/net/60-ksmbd-zerotier 解决开机时序。
 #
 # 2026-09-05 从实机验证配置固化。
+#
+# 2026-09-27 新增 allow_guest_ipc：ksmbd-tools 3.5.6 起移除了 IPC$ 共享默认的
+# guest_ok=yes（openwrt/packages commit 0875537），而 Windows 访问任何共享前
+# 必须先 tree connect IPC$，被拒即报「访问被拒绝」⇒ 匿名共享（guest_ok=yes）
+# 整体失效。故显式开启。配套 uci-defaults/zz-hc5962-custom 第 11 节双保险
+# （sysupgrade 保留配置时，本文件不会覆盖实机已有的 /etc/config/ksmbd）。
 
 config globals
 	option workgroup 'WORKGROUP'
 	option description 'Ksmbd on OpenWrt'
 	option interface 'lan zerotier'
+	option allow_guest_ipc '1'
 
 config share
 	option name 'sda1'
