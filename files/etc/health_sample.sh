@@ -1,15 +1,17 @@
 #!/bin/sh
 #
-# 健康采样 v1.06：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
+# 健康采样 v1.07：每 5 分钟记录 负载 / 内存明细 / CPU 细分 / D状态进程数 / RSS 前 3
 #                 + Xray 资源占用 / DoH 隧道连接数 / br-lan 收发速率
 #                 + Shmem 与 /tmp 内存盘占用
 #                 + Xray 单进程内存超限时自动重启（带冷却期）
 #                 + 可用内存持续过低时的专项取证（v1.06 新增，见第 4 节）
+#                 + cron 文件指纹监控（v1.07 新增，见第 5 节）
 #
 # 位置: files/etc/health_sample.sh（由 zz-hc5962-custom 挂 cron）
 # 输出: /tmp/health.log         内存盘，重启清空（主用，零磨损）
 #       /root/health-flash.log  闪存，重启保留（崩溃取证用）
 #       /root/health-alert.log  闪存，仅在异常时写入的「详细现场」
+#       /root/cron-watch.log    闪存，仅在 cron 文件变化时写入（v1.07）
 #
 # 为什么要两份常规日志（2026-09-06 实机事故后的修正）：
 #   本机曾发生「可用内存耗尽 → 内核回收 → UBI 闪存 I/O 阻塞 → 全机假死」，
@@ -79,6 +81,12 @@ XR_TS=/tmp/health_xray_restart
 AVAIL_HARD=25600
 LOWMEM_N=3
 LOWMEM_CT=/tmp/health_lowmem_ct
+
+# cron 文件指纹监控（v1.07）——见文件末尾第 5 节
+# 指纹存闪存而非内存盘：重启后仍能比对「开机前后 cron 有没有被加行」
+CRON_FILE=/etc/crontabs/root
+CRON_FP=/root/health_cron_prev
+CRON_WATCH=/root/cron-watch.log
 
 # ---------- 采集 ----------
 AV=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
@@ -229,8 +237,12 @@ if [ -f "$LOG" ] && [ "$(wc -c < $LOG)" -gt 400000 ]; then
 fi
 
 echo "$LINE" >> "$FLASH"
-if [ -f "$FLASH" ] && [ "$(wc -c < $FLASH)" -gt 150000 ]; then
-    tail -n 600 "$FLASH" > "$FLASH.tmp" && mv "$FLASH.tmp" "$FLASH"
+# 闪存留存放大（v1.07，2026-11-20）：原封顶 150000B/600 行只留约 1 天，
+# 11/19 那次事故后想回看更早趋势才发现被轮转冲掉。实测本机 5 分钟一行的
+# 格式约 277B/行 → 288 行/天，66.7MB 可用闪存。改为 2.4MB / 8640 行 ≈ 30 天，
+# 仅占可用空间 3.6%，可忽略。内存盘那份 LOG 仍维持小封顶（RAM 紧张，不动）。
+if [ -f "$FLASH" ] && [ "$(wc -c < $FLASH)" -gt 2400000 ]; then
+    tail -n 8640 "$FLASH" > "$FLASH.tmp" && mv "$FLASH.tmp" "$FLASH"
 fi
 
 # ---------- Xray 内存超限自动重启 ----------
@@ -393,6 +405,42 @@ if [ -n "$HIT" ]; then
 
     if [ -f "$ALERT" ] && [ "$(wc -c < $ALERT)" -gt 150000 ]; then
         tail -n 900 "$ALERT" > "$ALERT.tmp" && mv "$ALERT.tmp" "$ALERT"
+    fi
+fi
+
+# ---------- 第 5 节：cron 文件指纹监控（v1.07，2026-11-20）----------
+# 背景：2026-11-19 曾发现定时表被重复写入 64 对，导致每 5 分钟同时跑数十个
+#   采样脚本、内存耗尽 OOM 杀掉 DNS。事后查不出是谁、在什么时候写入的 ——
+#   因为常规采样只记资源指标（负载/内存/进程），根本不含 cron 文件状态；
+#   而日志只有一天就被轮转冲掉，更早的历史无从追查。
+# 本节补上这个盲区：每次采样读一次 cron 文件的「行数 + 内容校验值」当指纹，
+#   与上次存的比对。指纹没变 → 什么都不做（不写闪存、零额外开销）；
+#   一旦变化 → 立刻把当刻现场钉进 /root/cron-watch.log：
+#     时间、已开机秒数（判断是不是开机窗口触发）、旧指纹→新指纹、
+#     完整 cron 内容、uci-defaults 目录、相关进程。
+# 只读不写：本脚本绝不往 cron 表里加行、不新增进程、不新增 cron 任务，
+#   避免重蹈「脚本自己把系统搞死」的覆辙。
+# 日志封顶 50KB，超出保留尾部 300 行，无限长不了。
+if [ -f "$CRON_FILE" ]; then
+    CLINES=$(wc -l < "$CRON_FILE" 2>/dev/null)
+    CHASH=$(md5sum "$CRON_FILE" 2>/dev/null | awk '{print $1}')
+    CFP="${CLINES}|${CHASH}"
+    OLD=$(cat "$CRON_FP" 2>/dev/null)
+    if [ -z "$OLD" ]; then
+        echo "$CFP" > "$CRON_FP"          # 首次部署，只记基线，不算变化
+    elif [ "$CFP" != "$OLD" ]; then
+        {
+            echo "!! CRON CHANGED $(date '+%F %T') uptime=$(cut -d' ' -f1 /proc/uptime)s"
+            echo "   旧=$OLD  新=$CFP"
+            echo "-- cron 全文 --"; cat "$CRON_FILE"
+            echo "-- uci-defaults --"; ls -la /etc/uci-defaults/ 2>/dev/null
+            echo "-- 相关进程 --"; ps w | grep -E 'uci-defaults|health_sample|crond' | grep -v grep
+            echo
+        } >> "$CRON_WATCH"
+        echo "$CFP" > "$CRON_FP"
+        if [ -f "$CRON_WATCH" ] && [ "$(wc -c < $CRON_WATCH)" -gt 50000 ]; then
+            tail -n 300 "$CRON_WATCH" > "$CRON_WATCH.tmp" && mv "$CRON_WATCH.tmp" "$CRON_WATCH"
+        fi
     fi
 fi
 
